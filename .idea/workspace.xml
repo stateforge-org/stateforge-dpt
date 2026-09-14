@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ChangeListManager">
+    <list default="true" id="dfce1a9f-9f7a-4584-8920-fdc154edf928" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/dataSources.local.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/dataSources.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/dataSources/5b0a9542-4fc0-41c0-89ff-0fc4b8b50a61.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/dataSources/5b0a9542-4fc0-41c0-89ff-0fc4b8b50a61/storage_v2/_src_/schema/main.uQUzAA.meta" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/php.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/stateforge-dpt.iml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/architecture.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/index.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/package-lock.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/package.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png-dark-background/stateforge-mark-dark-1024.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png-dark-background/stateforge-mark-dark-128.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png-dark-background/stateforge-mark-dark-16.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png-dark-background/stateforge-mark-dark-256.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png-dark-background/stateforge-mark-dark-32.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png-dark-background/stateforge-mark-dark-512.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png-dark-background/stateforge-mark-dark-64.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png/stateforge-mark-1024.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png/stateforge-mark-128.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png/stateforge-mark-16.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png/stateforge-mark-256.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png/stateforge-mark-32.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png/stateforge-mark-512.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/png/stateforge-mark-64.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/react/StateForgeLogo.tsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/svg/stateforge-favicon.svg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/svg/stateforge-mark-black.svg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/svg/stateforge-mark-currentcolor.svg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/svg/stateforge-mark-dark-background.svg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/svg/stateforge-mark-glow.svg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/svg/stateforge-mark-white.svg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/public/assets/stateforge/svg/stateforge-mark.svg" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/src/App.tsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/src/PlanEditor.tsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/src/api.ts" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/src/main.tsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/src/styles.css" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/src/types.ts" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/src/ui.tsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/tsconfig.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/tsconfig.tsbuildinfo" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/frontend/vite.config.ts" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/__main__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/app.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/bootstrap.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/cli.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/config.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/database.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/git.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/github.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/security.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/stateforge_dpt/service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_github_artifacts.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_github_device_flow.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_plan_management.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_repositories.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ComposerSettings">
+    <execution />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 4
+}]]></component>
+  <component name="ProjectId" id="3JJHndRReGmri9beHMAfXcHQNfA" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "git-widget-placeholder": "main",
+    "last_opened_file_path": "/Users/noam/PhpstormProjects/stateforge-dpt/docs",
+    "nodejs_package_manager_path": "npm",
+    "npm.dev.executor": "Run",
+    "settings.editor.selected.configurable": "preferences.pluginManager",
+    "ts.external.directory.path": "/Applications/PhpStorm.app/Contents/plugins/javascript-plugin/jsLanguageServicesImpl/external",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/docs" />
+    </key>
+  </component>
+  <component name="RunManager">
+    <configuration name="dev" type="js.build_tools.npm" temporary="true" nameIsGenerated="true">
+      <package-json value="$PROJECT_DIR$/package.json" />
+      <command value="run" />
+      <scripts>
+        <script value="dev" />
+      </scripts>
+      <node-interpreter value="project" />
+      <envs />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="npm.dev" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-9b0f141eb926-JavaScript-PS-253.30387.85" />
+        <option value="bundled-php-predefined-a98d8de5180a-0e0d91225499-com.jetbrains.php.sharedIndexes-PS-253.30387.85" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="dfce1a9f-9f7a-4584-8920-fdc154edf928" name="Changes" comment="" />
+      <created>1789372418786</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1789372418786</updated>
+      <workItem from="1789372419797" duration="15478000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+</project>

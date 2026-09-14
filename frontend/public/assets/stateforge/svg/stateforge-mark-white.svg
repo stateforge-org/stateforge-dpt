@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="stateforge-mark" viewBox="0 0 100 100" fill="none" color="#FFFFFF" role="img" aria-labelledby="stateforge-white-title stateforge-white-desc" shape-rendering="geometricPrecision">
+  <title id="stateforge-white-title">StateForge</title>
+  <desc id="stateforge-white-desc">A cube containing a layered state checkpoint.</desc>
+  <style>.stateforge-mark path{vector-effect:non-scaling-stroke}</style>
+  <defs>
+    <filter id="sf-white-glow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation=".72" result="soft-glow"/>
+      <feMerge><feMergeNode in="soft-glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <linearGradient id="sf-white-upper-fall" gradientUnits="userSpaceOnUse" x1="27" y1="48" x2="27" y2="55">
+      <stop offset="0" stop-color="currentColor" stop-opacity=".4"/><stop offset=".48" stop-color="currentColor" stop-opacity="0"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="sf-white-lower-fall" gradientUnits="userSpaceOnUse" x1="27" y1="55" x2="27" y2="62">
+      <stop offset="0" stop-color="currentColor" stop-opacity=".32"/><stop offset=".48" stop-color="currentColor" stop-opacity="0"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <path d="M50 11 85 31v38L50 89 15 69V31Z" stroke="currentColor" stroke-width="2.35" stroke-linecap="round" stroke-linejoin="miter" filter="url(#sf-white-glow)"/>
+  <path d="M50 11v23M15 69l24.1-13.6M85 69 60.9 55.4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="miter" opacity=".3"/>
+  <path d="M27 48v7M73 48v7" stroke="url(#sf-white-upper-fall)" stroke-width="1.25" stroke-linecap="round"/>
+  <path d="M27 55v7M73 55v7" stroke="url(#sf-white-lower-fall)" stroke-width="1.15" stroke-linecap="round"/>
+  <g filter="url(#sf-white-glow)">
+    <path d="m50 34 23 14-23 14-23-14Z" fill="currentColor" fill-opacity=".07" stroke="currentColor" stroke-width="2.65" stroke-linecap="round" stroke-linejoin="miter"/>
+    <path d="m27 55 23 14 23-14" stroke="currentColor" stroke-width="2.35" stroke-linecap="round" stroke-linejoin="miter" opacity=".74"/>
+    <path d="m27 62 23 14 23-14" stroke="currentColor" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="miter" opacity=".48"/>
+  </g>
+  <path d="M50 34v28M27 48l23 3 23-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity=".38"/>
+</svg>
