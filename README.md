@@ -1,121 +1,136 @@
+<img src="https://avatars.githubusercontent.com/u/309498710?v=4&amp;s=160" width="80" height="80" alt="StateForge logo">
+
 # StateForge DPT
 
-StateForge Development Progress Tracking is a local-first control application
-for coordinating work across the StateForge repositories.
+**Plan visually. Track delivery. Share your plan through Git.**
 
-DPT edits the implementation plan locally, publishes its complete portable
-manifest into an identical `STATEFORGE_DPT.md` in every managed repository, and
-derives delivery progress from issues, pull requests, reviews, checks, and merge
-evidence retrieved from GitHub.
+[![PyPI version](https://img.shields.io/pypi/v/stateforge-dpt?color=3978ff)](https://pypi.org/project/stateforge-dpt/)
+[![Python versions](https://img.shields.io/pypi/pyversions/stateforge-dpt?color=3978ff)](https://pypi.org/project/stateforge-dpt/)
+![Platforms: Linux, macOS, Windows](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-3978ff)
 
-## Run DPT
+StateForge DPT (Development Progress Tracking) is a local web app for planning
+and tracking work across GitHub repositories. Create steps, connect dependencies,
+and see what is ready to build next—all in a visual workspace.
 
-DPT is packaged for Linux, macOS, and Windows. Requirements are Python 3.11 or
-newer and Git 2.31 or newer on PATH. Node.js is only needed when developing or
-building a release, not when installing and running DPT.
+Your plan lives alongside your code in Git. Issues, pull requests, and merges
+provide the delivery evidence. Each computer keeps its own local working copy.
 
-Once the first release is published to PyPI:
+## Why DPT?
 
-```bash
+- **Visual planning.** Describe a result, choose a repository, and select
+  prerequisite cards. DPT handles step IDs, ordering, and dependency validation.
+- **A connected roadmap.** Explore dependency stages or a graph, with search
+  and repository filters.
+- **An actionable work queue.** See ready, pending, in-review, blocked, and
+  completed work, with assigned contributors and their profile photos.
+- **GitHub context in one place.** Read formatted descriptions, comments,
+  reviews, and activity. Open issues, create planned branches and PRs, or jump
+  to GitHub to start a review.
+- **Git-backed collaboration.** Share the complete plan in
+  `STATEFORGE_DPT.md` and import it on another computer from a participating clone.
+- **Safe synchronization.** Refresh the shared plan without switching branches.
+  Conflicts and unpublished local edits are surfaced, not silently overwritten.
+
+## Installation
+
+Requires **Python 3.11+** and **Git 2.31+** on your PATH. Runs on Linux, macOS,
+and Windows. The browser interface is included; Node.js is not needed.
+
+```sh
 python -m pip install stateforge-dpt
 stateforge-dpt run
 ```
 
-On macOS/Linux, use `python3` if that is your Python command. On Windows, you can
-use `py -m pip install stateforge-dpt` and `py -m stateforge_dpt run` if the
-console command is not on PATH. A virtual environment is recommended; do not use
-`sudo pip install`. Before PyPI publication, install a downloaded wheel with
-`python -m pip install /path/to/stateforge_dpt-0.1.0-py3-none-any.whl`.
+Open [http://127.0.0.1:8463](http://127.0.0.1:8463) in your browser. Start DPT
+from any directory, keep the terminal open, and press `Ctrl+C` to stop it.
 
-Run `stateforge-dpt run` from any directory, then open
-[http://127.0.0.1:8463](http://127.0.0.1:8463) in your browser. The command prints
-the browser address and workspace locations at startup. Installed release wheels
-include the frontend; no separate frontend server is needed.
+On macOS/Linux, use `python3` if needed. On Windows, use
+`py -m pip install stateforge-dpt` and `py -m stateforge_dpt run` if the
+console command is not on your PATH.
 
-By default, the SQLite working copy and encrypted GitHub credentials live in
-`~/.stateforge-dpt/`. Suggested clones live under
-`~/.stateforge-dpt/projects/<PROJECT_NAME>/<REPOSITORY_NAME>`.
+Use a virtual environment for an OS-managed Python. If you already use
+[pipx](https://pipx.pypa.io/), `pipx install stateforge-dpt` is another option.
 
-User configuration is read from `~/.stateforge-dpt/.env`, with environment
-variables taking precedence. Editable source installations also read the
-checkout's `.env` as a lower-priority development configuration. Relative paths
-in a configuration file are resolved beside that file, never against the launch
-directory. Relative environment paths are resolved under `~/.stateforge-dpt/`.
-See [.env.example](.env.example) for overrides.
+## Your first project
 
-Existing databases are not moved or overwritten. To open a previous workspace:
+1. **Connect GitHub—or start locally.** Choose **Continue with GitHub** and
+   approve the one-time code. Local mode supports planning without signing in;
+   refreshing GitHub delivery evidence requires a connected account.
+2. **Add repositories.** Create a project, then attach existing clones or choose
+   **Clone for me**.
+3. **Build the plan.** In **Plan editor**, create a step, describe its expected
+   result, and choose its repository. Select prerequisite cards to connect work
+   across repositories—no dependency IDs to memorize.
+4. **Follow delivery.** Explore **Roadmap** and **Work queue**. Open a step for
+   its GitHub actions and details; reconcile to refresh shared plans and status.
 
-```bash
-stateforge-dpt run --data-dir /absolute/path/to/previous/.stateforge-dpt
+Joining an existing project? Choose **Import from repository** on the projects
+page and select a local clone containing a published `STATEFORGE_DPT.md`.
+DPT previews the complete plan before importing it.
+
+## Share a plan across computers
+
+Collaborate through your repositories, not a separate planning server:
+
+1. Choose **Review & publish** in **Plan editor** to preview and write the next
+   plan revision into your attached clones.
+2. Commit and push the generated files with Git, then merge them into the
+   project's shared **plan source branch**, configured in **Settings**.
+3. On another computer, install DPT and import the project from any participating
+   clone. Attach or clone the remaining repositories; the steps and dependencies
+   are already there.
+4. Connect GitHub and reconcile to fetch newer plan revisions and delivery
+   evidence—even while working on a feature branch.
+
+The source branch can be your default branch or another shared parent, such as
+`mvp/implementation`. Publishing writes local files; it does **not** commit,
+push, or merge them. Reconciliation does **not** rebase or change your working
+tree. Conflicting revisions or unpublished local edits require your resolution.
+
+## Progress backed by GitHub
+
+DPT uses project, release, and step labels to match GitHub activity to the plan:
+
+| Matched GitHub evidence | DPT state |
+| --- | --- |
+| Open issue | Pending |
+| Open pull request | In review |
+| Merged pull request | Completed |
+| Closed, unmerged pull request | Cancelled |
+
+Without matched evidence, prerequisites determine whether work is ready or
+blocked. Reconciliation flags workflow findings, such as a PR opened before its
+dependencies are complete. Perform reviews on GitHub using the shortcut to the
+PR's **Files changed** tab.
+
+## Local by design
+
+Working copies, cached GitHub activity, and encrypted credentials live under
+`~/.stateforge-dpt/`. New clones default to:
+
+```text
+~/.stateforge-dpt/projects/<PROJECT_NAME>/<REPOSITORY_NAME>
 ```
 
-The `--working-directory` option changes the parent workspace for suggested
-clones without changing the data directory.
+The shared plan excludes credentials, cached conversations, and local clone
+paths. Each collaborator uses their own account and clones. Remote cloning,
+shared-plan fetching, and GitHub updates require network access.
 
-## Development and packaging
+Update DPT with:
 
-```bash
-python3.11 -m venv .venv
-. .venv/bin/activate
-cd frontend && npm install && npm run build && cd ..
-python -m pip install -e .
-stateforge-dpt run
+```sh
+python -m pip install --upgrade stateforge-dpt
 ```
 
-Build the frontend before building a Python release (`python -m build`). Both
-wheels and source distributions carry that build, so installing them does not
-require Node.js. A missing frontend build produces an actionable startup error
-instead of a server that returns 404 at its home page.
+DPT is an early-stage release. Keep generated plan changes in Git for review
+and recovery through your normal development workflow.
 
-The package workflow builds the frontend, creates a wheel and source
-distribution, checks their metadata, and installs the same wheel on Linux,
-macOS, and Windows using Python 3.11–3.14. Each environment runs the test suite
-and starts the installed console command from an unrelated directory to check
-the frontend, JavaScript, CSS, favicon, API, and default data directory.
+## Documentation
 
-### Publish a release
+- [Configuration and troubleshooting](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/configuration.md)
+- [Architecture and plan format](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/architecture.md)
+- [Development and release guide](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/development.md)
+- [Issue tracker](https://github.com/stateforge-org/stateforge-dpt/issues)
 
-Publishing is manual; ordinary pushes and pull requests never upload to PyPI.
-Create the pending `stateforge-dpt` project in PyPI's Trusted Publishing settings
-with owner `stateforge-org`, repository `stateforge-dpt`, workflow `publish.yml`,
-and environment `pypi`. Configure the equivalent publisher on TestPyPI with
-environment `testpypi`. Protect these GitHub environments with required reviewer
-approval. No permanent PyPI token needs to be stored in the repository.
-
-Then run **Publish pip package (manual)** in GitHub Actions, choosing TestPyPI
-first. The workflow rebuilds and tests the distributions on all three operating
-systems before publishing. Choose PyPI for the production release. Increment
-the version in `pyproject.toml` for subsequent releases; PyPI versions cannot be
-overwritten. See [PyPI's Trusted Publishing guide](https://docs.pypi.org/trusted-publishers/).
-
-Select **Continue with GitHub** and authorize the StateForge DPT GitHub App
-with the displayed one-time code. DPT uses GitHub Device Flow: no callback URL,
-client secret, or user-managed token is required. Access and refresh tokens are
-encrypted locally and never exposed to the browser.
-
-## Core authority model
-
-- Git-tracked `STATEFORGE_DPT.md` files are the portable project authority. An
-  embedded versioned manifest preserves every repository, milestone, planned
-  branch, dependency, ordering rule, project revision, and content fingerprint.
-- SQLite is each computer's local editable working copy and GitHub evidence
-  cache. DPT refuses to silently overwrite local edits or choose between
-  divergent Git copies.
-- Every project has an explicit plan source branch (for example,
-  `mvp/implementation`). Reconciliation fetches that branch and reads only its
-  `STATEFORGE_DPT.md` through Git; it never checks out, rebases, or modifies the
-  developer's current branch or working tree.
-- Importing any participating clone recreates the full project. Only that clone
-  is attached immediately; the remaining repositories are ready to clone or
-  attach on the new computer.
-- Publishing writes the next identical revision to every attached clone. Commit
-  and push those generated files normally, then merge them into the configured
-  plan source branch. Reconciliation on another computer automatically imports
-  a strictly newer, conflict-free revision into its local SQLite working copy.
-- Local unpublished edits and same-revision divergence are never overwritten;
-  DPT surfaces the existing source chooser so the user can resolve them.
-- GitHub is the authority for delivery progress, not project definition.
-- DPT validates GitHub evidence against the dependency graph and reports real
-  workflow violations.
-
-See [docs/architecture.md](docs/architecture.md) for the complete design.
+GitHub documentation and the issue tracker require access to the project
+repository.
