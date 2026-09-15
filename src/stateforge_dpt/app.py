@@ -821,7 +821,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return service.activities(project_id)
 
     frontend = resolved.frontend_dir
-    if frontend.is_dir():
+    if (frontend / "index.html").is_file():
         assets = frontend / "assets"
         if assets.is_dir():
             app.mount("/assets", StaticFiles(directory=assets), name="assets")
@@ -834,6 +834,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return FileResponse(frontend / "index.html")
 
     return app
-
-
-app = create_app()

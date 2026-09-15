@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -13,6 +13,36 @@ from urllib.parse import urlparse
 
 class GitError(RuntimeError):
     """Raised when a controlled Git operation fails."""
+
+
+def _git_environment(access_token: str | None) -> dict[str, str]:
+    """Supply GitHub HTTPS credentials using cross-platform Git configuration."""
+    environment = os.environ.copy()
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    if not access_token:
+        return environment
+    try:
+        count = int(environment.get("GIT_CONFIG_COUNT") or "0")
+    except ValueError as error:
+        raise GitError("GIT_CONFIG_COUNT must be a non-negative integer") from error
+    if count < 0:
+        raise GitError("GIT_CONFIG_COUNT must be a non-negative integer")
+    credentials = base64.b64encode(f"x-access-token:{access_token}".encode()).decode(
+        "ascii"
+    )
+    # Reset inherited headers and scope the token to GitHub HTTPS only. Nothing
+    # is written to a shell script, clone URL, repository config, or argv.
+    entries = [
+        ("http.https://github.com/.extraHeader", ""),
+        ("http.https://github.com/.extraHeader", f"Authorization: Basic {credentials}"),
+        ("http.https://github.com/.followRedirects", "false"),
+        ("credential.https://github.com.helper", ""),
+    ]
+    for offset, (key, value) in enumerate(entries, start=count):
+        environment[f"GIT_CONFIG_KEY_{offset}"] = key
+        environment[f"GIT_CONFIG_VALUE_{offset}"] = value
+    environment["GIT_CONFIG_COUNT"] = str(count + len(entries))
+    return environment
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,12 +65,16 @@ def _run(
 ) -> str:
     git = shutil.which("git")
     if git is None:
-        raise GitError("Git executable was not found")
+        raise GitError(
+            "Git was not found. Install Git 2.31 or newer and add it to PATH."
+        )
     completed = subprocess.run(  # noqa: S603 - fixed executable, no shell
         [git, "-C", str(path), *arguments],
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         env=environment,
     )
@@ -62,24 +96,7 @@ def read_remote_file(
         raise GitError(f"Local path does not exist: {path}")
     _run(path, "check-ref-format", "--branch", branch)
 
-    environment = os.environ.copy()
-    environment["GIT_TERMINAL_PROMPT"] = "0"
-    temporary_directory: tempfile.TemporaryDirectory[str] | None = None
-    if access_token:
-        temporary_directory = tempfile.TemporaryDirectory(prefix="stateforge-dpt-")
-        askpass = Path(temporary_directory.name) / "askpass.sh"
-        askpass.write_text(
-            "#!/bin/sh\n"
-            'case "$1" in\n'
-            '  *Username*) printf "%s\\n" "x-access-token" ;;\n'
-            '  *) printf "%s\\n" "$STATEFORGE_DPT_FETCH_TOKEN" ;;\n'
-            "esac\n",
-            encoding="utf-8",
-        )
-        askpass.chmod(0o700)
-        environment["GIT_ASKPASS"] = str(askpass)
-        environment["STATEFORGE_DPT_FETCH_TOKEN"] = access_token
-
+    environment = _git_environment(access_token)
     try:
         _run(
             path,
@@ -93,9 +110,7 @@ def read_remote_file(
         )
         return _run(path, "show", f"FETCH_HEAD:{filename}", timeout=60)
     finally:
-        environment.pop("STATEFORGE_DPT_FETCH_TOKEN", None)
-        if temporary_directory:
-            temporary_directory.cleanup()
+        environment.clear()
 
 
 def normalized_remote(value: str) -> str:
@@ -159,28 +174,13 @@ def clone_repository(
     if destination.exists():
         raise GitError(f"Clone destination already exists: {destination}")
 
-    environment = os.environ.copy()
-    environment["GIT_TERMINAL_PROMPT"] = "0"
-    temporary_directory: tempfile.TemporaryDirectory[str] | None = None
-    if access_token:
-        temporary_directory = tempfile.TemporaryDirectory(prefix="stateforge-dpt-")
-        askpass = Path(temporary_directory.name) / "askpass.sh"
-        askpass.write_text(
-            "#!/bin/sh\n"
-            'case "$1" in\n'
-            '  *Username*) printf "%s\\n" "x-access-token" ;;\n'
-            '  *) printf "%s\\n" "$STATEFORGE_DPT_CLONE_TOKEN" ;;\n'
-            "esac\n",
-            encoding="utf-8",
-        )
-        askpass.chmod(0o700)
-        environment["GIT_ASKPASS"] = str(askpass)
-        environment["STATEFORGE_DPT_CLONE_TOKEN"] = access_token
-
+    environment = _git_environment(access_token)
     try:
         git = shutil.which("git")
         if git is None:
-            raise GitError("Git executable was not found")
+            raise GitError(
+                "Git was not found. Install Git 2.31 or newer and add it to PATH."
+            )
         completed = subprocess.run(  # noqa: S603 - fixed executable, no shell
             [
                 git,
@@ -191,13 +191,13 @@ def clone_repository(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=600,
             env=environment,
         )
     finally:
-        environment.pop("STATEFORGE_DPT_CLONE_TOKEN", None)
-        if temporary_directory:
-            temporary_directory.cleanup()
+        environment.clear()
 
     if completed.returncode:
         message = completed.stderr.strip() or completed.stdout.strip()

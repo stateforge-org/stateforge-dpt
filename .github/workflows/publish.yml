@@ -1,0 +1,34 @@
+name: Publish pip package (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Package index to publish to
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+jobs:
+  verified-package:
+    uses: ./.github/workflows/package.yml
+
+  publish:
+    needs: verified-package
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: python-distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}

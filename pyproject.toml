@@ -8,27 +8,63 @@ version = "0.1.0"
 description = "Local development progress control for StateForge repositories."
 readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["development", "github", "git", "planning", "project-management"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
 dependencies = [
     "cryptography>=44.0",
     "fastapi>=0.115",
     "httpx>=0.28",
     "pydantic>=2.10",
     "python-dotenv>=1.0",
-    "uvicorn[standard]>=0.34",
+    "uvicorn>=0.34",
 ]
+
+[project.urls]
+Repository = "https://github.com/stateforge-org/stateforge-dpt"
+Issues = "https://github.com/stateforge-org/stateforge-dpt/issues"
 
 [project.scripts]
 stateforge-dpt = "stateforge_dpt.cli:main"
 
 [dependency-groups]
 dev = [
+    "build>=1.2",
     "mypy>=1.15",
     "pytest>=8.3",
     "ruff>=0.11",
+    "twine>=6.0",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stateforge_dpt"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"frontend/dist" = "stateforge_dpt/frontend"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src", "/tests", "/tools", "/docs",
+    "/frontend/src", "/frontend/public", "/frontend/index.html",
+    "/frontend/package.json", "/frontend/package-lock.json",
+    "/frontend/tsconfig.json", "/frontend/vite.config.ts",
+    "/pyproject.toml", "/README.md", "/.env.example",
+]
+
+[tool.hatch.build.targets.sdist.force-include]
+"frontend/dist" = "frontend/dist"
 
 [tool.ruff]
 target-version = "py311"

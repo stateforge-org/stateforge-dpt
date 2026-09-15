@@ -8,17 +8,85 @@ manifest into an identical `STATEFORGE_DPT.md` in every managed repository, and
 derives delivery progress from issues, pull requests, reviews, checks, and merge
 evidence retrieved from GitHub.
 
-## Development
+## Run DPT
+
+DPT is packaged for Linux, macOS, and Windows. Requirements are Python 3.11 or
+newer and Git 2.31 or newer on PATH. Node.js is only needed when developing or
+building a release, not when installing and running DPT.
+
+Once the first release is published to PyPI:
+
+```bash
+python -m pip install stateforge-dpt
+stateforge-dpt run
+```
+
+On macOS/Linux, use `python3` if that is your Python command. On Windows, you can
+use `py -m pip install stateforge-dpt` and `py -m stateforge_dpt run` if the
+console command is not on PATH. A virtual environment is recommended; do not use
+`sudo pip install`. Before PyPI publication, install a downloaded wheel with
+`python -m pip install /path/to/stateforge_dpt-0.1.0-py3-none-any.whl`.
+
+Run `stateforge-dpt run` from any directory, then open
+[http://127.0.0.1:8463](http://127.0.0.1:8463) in your browser. The command prints
+the browser address and workspace locations at startup. Installed release wheels
+include the frontend; no separate frontend server is needed.
+
+By default, the SQLite working copy and encrypted GitHub credentials live in
+`~/.stateforge-dpt/`. Suggested clones live under
+`~/.stateforge-dpt/projects/<PROJECT_NAME>/<REPOSITORY_NAME>`.
+
+User configuration is read from `~/.stateforge-dpt/.env`, with environment
+variables taking precedence. Editable source installations also read the
+checkout's `.env` as a lower-priority development configuration. Relative paths
+in a configuration file are resolved beside that file, never against the launch
+directory. Relative environment paths are resolved under `~/.stateforge-dpt/`.
+See [.env.example](.env.example) for overrides.
+
+Existing databases are not moved or overwritten. To open a previous workspace:
+
+```bash
+stateforge-dpt run --data-dir /absolute/path/to/previous/.stateforge-dpt
+```
+
+The `--working-directory` option changes the parent workspace for suggested
+clones without changing the data directory.
+
+## Development and packaging
 
 ```bash
 python3.11 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e .
 cd frontend && npm install && npm run build && cd ..
+python -m pip install -e .
 stateforge-dpt run
 ```
 
-Open <http://127.0.0.1:8463>.
+Build the frontend before building a Python release (`python -m build`). Both
+wheels and source distributions carry that build, so installing them does not
+require Node.js. A missing frontend build produces an actionable startup error
+instead of a server that returns 404 at its home page.
+
+The package workflow builds the frontend, creates a wheel and source
+distribution, checks their metadata, and installs the same wheel on Linux,
+macOS, and Windows using Python 3.11–3.14. Each environment runs the test suite
+and starts the installed console command from an unrelated directory to check
+the frontend, JavaScript, CSS, favicon, API, and default data directory.
+
+### Publish a release
+
+Publishing is manual; ordinary pushes and pull requests never upload to PyPI.
+Create the pending `stateforge-dpt` project in PyPI's Trusted Publishing settings
+with owner `stateforge-org`, repository `stateforge-dpt`, workflow `publish.yml`,
+and environment `pypi`. Configure the equivalent publisher on TestPyPI with
+environment `testpypi`. Protect these GitHub environments with required reviewer
+approval. No permanent PyPI token needs to be stored in the repository.
+
+Then run **Publish pip package (manual)** in GitHub Actions, choosing TestPyPI
+first. The workflow rebuilds and tests the distributions on all three operating
+systems before publishing. Choose PyPI for the production release. Increment
+the version in `pyproject.toml` for subsequent releases; PyPI versions cannot be
+overwritten. See [PyPI's Trusted Publishing guide](https://docs.pypi.org/trusted-publishers/).
 
 Select **Continue with GitHub** and authorize the StateForge DPT GitHub App
 with the displayed one-time code. DPT uses GitHub Device Flow: no callback URL,

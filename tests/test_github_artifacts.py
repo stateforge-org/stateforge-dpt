@@ -168,10 +168,12 @@ def test_same_github_artifact_can_be_cached_in_two_local_projects(
         rows = connection.execute(
             "SELECT artifact_id FROM github_artifacts ORDER BY artifact_id"
         ).fetchall()
-    assert [row["artifact_id"] for row in rows] == [
-        f"{project_one['project_id']}:101",
-        f"{project_two['project_id']}:101",
-    ]
+    assert [row["artifact_id"] for row in rows] == sorted(
+        [
+            f"{project_one['project_id']}:101",
+            f"{project_two['project_id']}:101",
+        ]
+    )
 
 
 def test_repository_artifacts_include_timeline_and_review_comments(

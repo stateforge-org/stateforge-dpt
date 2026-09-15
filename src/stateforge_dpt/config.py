@@ -6,9 +6,35 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 DEFAULT_GITHUB_CLIENT_ID = "Iv23lidYTyPNl3LWbjTI"
+PACKAGE_DIRECTORY = Path(__file__).resolve().parent
+
+
+def default_data_dir() -> Path:
+    """Return the per-user workspace, independent of the launch directory."""
+    return Path.home() / ".stateforge-dpt"
+
+
+def _source_root() -> Path | None:
+    """Locate an editable installation without searching the current directory."""
+    if PACKAGE_DIRECTORY.parent.name == "src":
+        candidate = PACKAGE_DIRECTORY.parent.parent
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
+def default_frontend_dir() -> Path:
+    """Prefer bundled UI assets, falling back to an editable checkout's build."""
+    bundled = PACKAGE_DIRECTORY / "frontend"
+    if (bundled / "index.html").is_file():
+        return bundled
+    source = _source_root()
+    if source is not None:
+        return source / "frontend" / "dist"
+    return bundled
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +46,7 @@ class Settings:
     data_dir: Path
     frontend_dir: Path
     github_client_id: str
-    working_directory: Path = field(default_factory=lambda: Path.cwd().resolve())
+    working_directory: Path = field(default_factory=default_data_dir)
 
     @property
     def database_path(self) -> Path:
@@ -29,24 +55,40 @@ class Settings:
 
 
 def load_settings(root: Path | None = None) -> Settings:
-    """Load settings from the environment and an optional local `.env`."""
-    project_root = (root or Path.cwd()).resolve()
-    load_dotenv(project_root / ".env")
+    """Load user configuration and environment overrides, never from the cwd."""
+    config_root = (root or default_data_dir()).resolve()
+    values: dict[str, tuple[str, Path]] = {}
+    source = _source_root()
+    config_roots = [source, config_root] if root is None else [config_root]
+    for config_directory in config_roots:
+        if config_directory is not None:
+            for key, configured_value in dotenv_values(
+                config_directory / ".env"
+            ).items():
+                if configured_value is not None:
+                    values[key] = (configured_value, config_directory)
+    for key, environment_value in os.environ.items():
+        if key.startswith("STATEFORGE_DPT_"):
+            values[key] = (environment_value, config_root)
 
-    data_dir = Path(
-        os.getenv("STATEFORGE_DPT_DATA_DIR", project_root / ".stateforge-dpt")
-    ).expanduser()
-    frontend_dir = Path(
-        os.getenv("STATEFORGE_DPT_FRONTEND_DIR", project_root / "frontend/dist")
-    ).expanduser()
+    def value(key: str, default: str) -> str:
+        return values.get(key, (default, config_root))[0] or default
+
+    def directory(key: str, default: Path) -> Path:
+        configured, base = values.get(key, (str(default), config_root))
+        selected = Path(configured).expanduser() if configured else default
+        return (selected if selected.is_absolute() else base / selected).resolve()
+
+    data_dir = directory("STATEFORGE_DPT_DATA_DIR", default_data_dir())
+    frontend_dir = directory("STATEFORGE_DPT_FRONTEND_DIR", default_frontend_dir())
 
     return Settings(
-        host=os.getenv("STATEFORGE_DPT_HOST", "127.0.0.1"),
-        port=int(os.getenv("STATEFORGE_DPT_PORT", "8463")),
-        data_dir=data_dir.resolve(),
-        frontend_dir=frontend_dir.resolve(),
-        github_client_id=(
-            os.getenv("STATEFORGE_DPT_GITHUB_CLIENT_ID") or DEFAULT_GITHUB_CLIENT_ID
+        host=value("STATEFORGE_DPT_HOST", "127.0.0.1"),
+        port=int(value("STATEFORGE_DPT_PORT", "8463")),
+        data_dir=data_dir,
+        frontend_dir=frontend_dir,
+        github_client_id=value(
+            "STATEFORGE_DPT_GITHUB_CLIENT_ID", DEFAULT_GITHUB_CLIENT_ID
         ),
-        working_directory=project_root,
+        working_directory=directory("STATEFORGE_DPT_WORKING_DIRECTORY", data_dir),
     )
