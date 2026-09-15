@@ -22,6 +22,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { api } from "./api";
+import { Markdown } from "./Markdown";
 import type { Dashboard, PlanSource, PlanSyncStatus, Repository, Step } from "./types";
 import {
   EmptyState,
@@ -489,7 +490,9 @@ function PlanStepCard({
         <StatusBadge status={step.computed_state} />
       </header>
       <strong>{stripTitle(step.title)}</strong>
-      <p>{step.required_result}</p>
+      <div className="plan-step-summary">
+        <Markdown compact>{step.required_result}</Markdown>
+      </div>
       <div className="plan-step-prerequisites">
         <Route />
         <span>

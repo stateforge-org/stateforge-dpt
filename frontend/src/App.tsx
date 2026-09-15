@@ -56,6 +56,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { api, apiStream } from "./api";
+import { Markdown } from "./Markdown";
 import { PlanEditorPage } from "./PlanEditor";
 import type {
   Activity,
@@ -2081,7 +2082,6 @@ function StepDetail({ dashboard, session, step, onClose, onSelect }: { dashboard
                 <StatusBadge status={step.computed_state} />
               </div>
               <h2 id="step-dialog-title">{step.title}</h2>
-              <p>{step.required_result}</p>
               <div className="step-dialog-assignees">
                 <AssigneeList accounts={assignees} />
               </div>
@@ -2144,6 +2144,9 @@ function StepDetail({ dashboard, session, step, onClose, onSelect }: { dashboard
                 </button>
               ) : null}
             </div>
+          </div>
+          <div className="github-markdown milestone-markdown">
+            <Markdown>{step.required_result}</Markdown>
           </div>
           {issueError && <p className="step-dialog-action-error">{issueError}</p>}
         </div>

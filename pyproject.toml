@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stateforge-dpt"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local development progress control for StateForge repositories."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -57,7 +57,7 @@ packages = ["src/stateforge_dpt"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/src", "/tests", "/tools", "/docs",
-    "/frontend/src", "/frontend/public", "/frontend/index.html",
+    "/frontend/src", "/frontend/tests", "/frontend/public", "/frontend/index.html",
     "/frontend/package.json", "/frontend/package-lock.json",
     "/frontend/tsconfig.json", "/frontend/vite.config.ts",
     "/pyproject.toml", "/README.md", "/.env.example",
