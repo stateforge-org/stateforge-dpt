@@ -113,6 +113,25 @@ def read_remote_file(
         environment.clear()
 
 
+def is_committed_file(path_value: str, filename: str) -> bool:
+    """Compare a file with HEAD and the index without writing Git objects."""
+    path = Path(path_value).expanduser().resolve()
+    target = path / filename
+    if target.is_symlink() or not target.is_file():
+        return False
+    try:
+        head_blob = _run(path, "rev-parse", "--verify", f"HEAD:{filename}")
+        index_blob = _run(path, "rev-parse", "--verify", f":0:{filename}")
+        worktree_blob = _run(
+            path, "hash-object", f"--path={filename}", "--", str(target)
+        )
+    except (GitError, subprocess.TimeoutExpired):
+        return False
+    # Hashing the actual worktree bytes avoids assume-unchanged/skip-worktree
+    # flags hiding edits. --path applies Git's normal clean/EOL conversion.
+    return head_blob == index_blob == worktree_blob
+
+
 def normalized_remote(value: str) -> str:
     """Normalize common GitHub remote formats to `owner/repository`."""
     remote = value.strip().removesuffix(".git")

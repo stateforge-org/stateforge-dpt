@@ -19,6 +19,7 @@ from stateforge_dpt.git import (
     clone_identity,
     clone_repository,
     inspect_clone,
+    is_committed_file,
     read_remote_file,
 )
 from stateforge_dpt.models import (
@@ -1746,6 +1747,85 @@ class DPTService:
         )
         return "\n".join(lines)
 
+    def _validate_publish_snapshot(
+        self,
+        project: dict[str, Any],
+        repository: dict[str, Any],
+        loaded: LoadedPlan,
+        working_fingerprint: str,
+        location: str,
+    ) -> None:
+        """Reject foreign, newer, or same-revision divergent published plans."""
+        source_project = loaded.plan.project
+        if (
+            source_project.slug != project["slug"]
+            or source_project.release.casefold() != str(project["release"]).casefold()
+            or source_project.generated_filename != project["generated_filename"]
+        ):
+            raise DPTError(
+                f"The DPT file at {location} belongs to a different project or "
+                "release. Review its plan before publishing."
+            )
+        repository_names = {
+            item.github_full_name.casefold() for item in loaded.plan.repositories
+        }
+        if str(repository["github_full_name"]).casefold() not in repository_names:
+            raise DPTError(
+                f"The DPT manifest at {location} does not include "
+                f"{repository['github_full_name']}. Review it before publishing."
+            )
+        local_revision = int(project["revision"])
+        if source_project.revision > local_revision:
+            raise DPTError(
+                f"A newer Git plan (revision {source_project.revision}) exists at "
+                f"{location}; DPT is at revision {local_revision}. Reconcile and "
+                "resolve the newer plan before publishing."
+            )
+        if source_project.revision == local_revision and loaded.fingerprint not in (
+            project.get("plan_fingerprint"),
+            working_fingerprint,
+        ):
+            raise DPTError(
+                f"Git and DPT contain different plans at revision {local_revision} "
+                f"({location}). Review and resolve the conflict before publishing."
+            )
+
+    def _validate_publish_target(
+        self,
+        project: dict[str, Any],
+        repository: dict[str, Any],
+        target: Path,
+        current_digest: str,
+        next_digest: str,
+        working_fingerprint: str,
+    ) -> None:
+        """Accept known DPT output or a compatible, unchanged Git snapshot."""
+        if current_digest == next_digest:
+            return
+        previous = repository["last_generated_digest"]
+        try:
+            loaded = load_plan(str(target))
+        except (PlanFileError, UnicodeError) as error:
+            if current_digest == previous:
+                # An unchanged output from a pre-manifest DPT release can still
+                # be upgraded. Unknown or edited legacy files remain protected.
+                return
+            raise DPTError(
+                f"Generated file changed outside DPT: {target}. Its embedded "
+                f"plan cannot be validated: {error}. Review it before publishing."
+            ) from error
+        self._validate_publish_snapshot(
+            project, repository, loaded, working_fingerprint, str(target)
+        )
+        if current_digest == previous:
+            return
+        if not is_committed_file(str(repository["local_path"]), target.name):
+            raise DPTError(
+                f"Generated file changed outside DPT: {target}. DPT could not "
+                "verify it as an unchanged committed Git snapshot; it may have "
+                "uncommitted or staged edits. Review those changes before publishing."
+            )
+
     def generate_project_files(
         self, project_id: str, force: bool = False
     ) -> dict[str, Any]:
@@ -1758,6 +1838,29 @@ class DPTService:
         if not attached:
             raise DPTError("Attach at least one local repository before generating")
 
+        working_fingerprint = plan_fingerprint(self.portable_plan(project_id))
+        if not force:
+            for repository in attached:
+                try:
+                    loaded, source_is_worktree = self._repository_plan_source(
+                        project, repository
+                    )
+                except (DPTError, UnicodeError):
+                    continue
+                if not source_is_worktree:
+                    location = (
+                        f"{repository['github_full_name']} "
+                        f"origin/{project['plan_source_branch']}:"
+                        f"{project['generated_filename']}"
+                    )
+                    self._validate_publish_snapshot(
+                        project,
+                        repository,
+                        loaded,
+                        working_fingerprint,
+                        location,
+                    )
+
         revision = int(project["revision"]) + 1
         content = self.render_project(project_id, revision)
         digest = hashlib.sha256(content.encode()).hexdigest()
@@ -1765,18 +1868,16 @@ class DPTService:
         targets: list[tuple[dict[str, Any], Path]] = []
         for repository in attached:
             target = Path(repository["local_path"]) / project["generated_filename"]
-            if target.exists():
+            if target.exists() and not force:
                 current_digest = hashlib.sha256(target.read_bytes()).hexdigest()
-                previous = repository["last_generated_digest"]
-                if (
-                    current_digest != digest
-                    and current_digest != previous
-                    and not force
-                ):
-                    raise DPTError(
-                        f"Generated file changed outside DPT: {target}. "
-                        "Review it before using force."
-                    )
+                self._validate_publish_target(
+                    project,
+                    repository,
+                    target,
+                    current_digest,
+                    digest,
+                    working_fingerprint,
+                )
             targets.append((repository, target))
 
         temporary_files: list[tuple[dict[str, Any], Path, Path]] = []

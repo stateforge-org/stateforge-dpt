@@ -69,11 +69,21 @@ advance without changing the dependency graph.
 ## Generated-file safety
 
 The renderer is deterministic. DPT records the last digest written to each
-clone and refuses to overwrite a changed generated file without an explicit
-force action. The embedded manifest is independently checksummed and parsed
+clone. A branch switch or Git update may legitimately replace that file, so
+publishing also recognizes unchanged, committed Git snapshots with a valid
+manifest for the same project, release, and repository. Older revisions can be
+advanced; a current revision must match the published baseline or working plan.
+Both the worktree and index are checked for edits to the generated file;
+unrelated code changes do not prevent publication.
+
+Newer plans and same-revision divergence remain protected, including cached
+source-branch snapshots discovered during reconciliation. Unknown files with
+uncommitted edits or invalid manifests require review instead of being silently
+overwritten. The embedded manifest is independently checksummed and parsed
 through a strict schema with duplicate, missing-dependency, and cycle checks.
-Files are written atomically. Absolute local paths, credentials, cached GitHub
-activity, and tokens never appear in the generated document.
+Every target is validated before any file is written. Files are written
+atomically. Absolute local paths, credentials, cached GitHub activity, and
+tokens never appear in the generated document.
 
 ## GitHub authentication
 
