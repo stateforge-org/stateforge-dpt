@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -21,6 +22,13 @@ def read_url(url: str) -> str:
     """Read one URL from the local smoke-test server."""
     with urlopen(url, timeout=2) as response:  # noqa: S310 - localhost only
         return response.read().decode("utf-8")
+
+
+def print_server_output(output: str) -> None:
+    """Replay UTF-8 server output safely through the parent console's encoding."""
+    encoding = sys.stdout.encoding or "utf-8"
+    printable = output.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(printable)
 
 
 def main() -> None:
@@ -91,7 +99,7 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 output, _ = process.communicate(timeout=5)
-            print(output)
+            print_server_output(output)
         assert "Continue with GitHub" in output  # noqa: S101
         assert "INFO:" not in output  # noqa: S101
         print(
