@@ -818,6 +818,14 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
 .pull-request-builder > header strong { font-size: 13px; }
 .pull-request-builder > header p { margin: 4px 0 0; color: #718096; font-size: 11px; }
 .pull-request-builder > header > svg { color: #65758c; }
+.branch-flow { display: grid; grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr); align-items: center; gap: 10px; }
+.branch-flow > div { min-width: 0; display: grid; gap: 6px; padding: 11px 12px; border: 1px solid #d5e0ef; border-radius: 9px; background: white; }
+.branch-flow span { color: #748196; font-size: 10px; font-weight: 700; }
+.branch-flow code { overflow: hidden; color: #26364d; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.branch-flow > svg { margin: 0 auto; color: #4f7fc8; }
+.branch-advanced { margin-top: 10px; }
+.branch-advanced > summary { width: fit-content; color: #607086; font-size: 10px; font-weight: 700; cursor: pointer; }
+.branch-advanced[open] > summary { margin-bottom: 10px; }
 .branch-selection { display: grid; grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr); align-items: end; gap: 10px; }
 .branch-selection > svg { margin: 0 auto 11px; color: #8da0b8; }
 .branch-selection label { min-width: 0; display: grid; gap: 6px; color: #748196; font-size: 10px; font-weight: 700; }
@@ -827,6 +835,11 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
 .branch-create-callout strong { color: #735015; font-size: 11px; }
 .branch-create-callout p { margin: 3px 0 0; color: #876a38; font-size: 10px; }
 .branch-create-callout code { color: #6c511e; }
+.branch-empty-state { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-top: 12px; padding: 13px 14px; border: 1px solid #d8e3f2; border-radius: 9px; background: white; }
+.branch-empty-state > svg { width: 20px; color: #7085a3; }
+.branch-empty-state strong { color: #2b3a50; font-size: 11px; }
+.branch-empty-state p { margin: 3px 0 0; color: #68778d; font-size: 10px; line-height: 1.5; }
+.branch-empty-state code { color: #425a7d; }
 .branch-warning, .branch-success, .branch-comparison, .branch-ready, .pull-request-error { margin: 10px 0 0; color: #9b660f; font-size: 11px; }
 .branch-success { color: #087a56; }
 .branch-comparison { color: #607086; }
@@ -911,8 +924,12 @@ html[data-project-transition="exit"] .projects-page {
   .github-record-actions { width: 100%; grid-column: 1 / -1; justify-content: stretch; }
   .github-record-actions .button { flex: 1; }
   .branch-create-callout { align-items: flex-start; flex-direction: column; }
+  .branch-flow { grid-template-columns: 1fr; }
+  .branch-flow > svg { transform: rotate(90deg); }
   .branch-selection { grid-template-columns: 1fr; }
   .branch-selection > svg { margin: 0 auto; transform: rotate(90deg); }
+  .branch-empty-state { grid-template-columns: 28px minmax(0, 1fr); align-items: start; }
+  .branch-empty-state > .button { grid-column: 2; justify-self: start; }
   .page-header { align-items: flex-start; flex-direction: column; }
   .page-actions { width: 100%; flex-wrap: wrap; }
   .page-actions .button { flex: 1; }

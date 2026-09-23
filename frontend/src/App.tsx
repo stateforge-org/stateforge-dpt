@@ -2604,6 +2604,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
   } | null>(null);
   const [comparisonLoading, setComparisonLoading] = useState(false);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
+  const [comparisonRevision, setComparisonRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [creatingBranch, setCreatingBranch] = useState(false);
   const [creatingPullRequest, setCreatingPullRequest] = useState(false);
@@ -2678,6 +2679,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
     dashboard.project.project_id,
     headBranch,
     headBranchExists,
+    comparisonRevision,
     step.step_id,
   ]);
 
@@ -2744,10 +2746,10 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
     <div className="pull-request-builder">
       <header>
         <div>
-          <strong>Prepare the milestone pull request</strong>
+          <strong>Milestone pull request</strong>
           <p>
-            Choose a base and compare branch. DPT can create the planned branch
-            from the selected base when it does not exist yet.
+            Review changes from the planned branch before merging them into the
+            project branch.
           </p>
         </div>
         <Github />
@@ -2756,31 +2758,45 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
         <Loading label="Loading GitHub branches" />
       ) : (
         <>
-          <div className="branch-selection">
-            <label>
-              <span>Base</span>
-              <select
-                value={baseBranch}
-                onChange={(event) => setBaseBranch(event.target.value)}
-              >
-                {branches.map((branch) => <option key={branch}>{branch}</option>)}
-              </select>
-            </label>
+          <div className="branch-flow" aria-label="Pull request merge direction">
+            <div>
+              <span>Changes from</span>
+              <code>{headBranch}</code>
+            </div>
             <ArrowRight />
-            <label>
-              <span>Compare (source)</span>
-              <select
-                value={headBranch}
-                onChange={(event) => setHeadBranch(event.target.value)}
-              >
-                {branchOptions.map((branch) => (
-                  <option key={branch} value={branch}>
-                    {branch}{!branches.includes(branch) ? " (not created)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div>
+              <span>Merge into</span>
+              <code>{baseBranch}</code>
+            </div>
           </div>
+          <details className="branch-advanced">
+            <summary>Advanced branch selection</summary>
+            <div className="branch-selection">
+              <label>
+                <span>Changes from</span>
+                <select
+                  value={headBranch}
+                  onChange={(event) => setHeadBranch(event.target.value)}
+                >
+                  {branchOptions.map((branch) => (
+                    <option key={branch} value={branch}>
+                      {branch}{!branches.includes(branch) ? " (not created)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <ArrowRight />
+              <label>
+                <span>Merge into</span>
+                <select
+                  value={baseBranch}
+                  onChange={(event) => setBaseBranch(event.target.value)}
+                >
+                  {branches.map((branch) => <option key={branch}>{branch}</option>)}
+                </select>
+              </label>
+            </div>
+          </details>
           {!plannedBranchExists && headBranch === step.branch_name && (
             <div className="branch-create-callout">
               <div>
@@ -2799,17 +2815,32 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
           )}
           {baseBranch === headBranch && (
             <p className="branch-warning">
-              The base and compare branches must be different.
+              “Changes from” and “Merge into” must use different branches.
             </p>
           )}
           {comparisonLoading && (
             <p className="branch-comparison">Checking branch differences…</p>
           )}
           {comparison && comparison.ahead_by === 0 && (
-            <p className="branch-warning">
-              The compare branch has no commits ahead of the base branch. Push
-              at least one implementation commit before opening the pull request.
-            </p>
+            <div className="branch-empty-state">
+              <GitPullRequest />
+              <div>
+                <strong>No changes to open yet</strong>
+                <p>
+                  <code>{headBranch}</code> currently has no commits beyond{" "}
+                  <code>{baseBranch}</code>. Implement the milestone and push a
+                  commit to the planned branch, then check again.
+                </p>
+              </div>
+              <button
+                className="button button-secondary button-small"
+                disabled={comparisonLoading}
+                onClick={() => setComparisonRevision((value) => value + 1)}
+              >
+                <RefreshCw />
+                Refresh
+              </button>
+            </div>
           )}
           {comparison && comparison.ahead_by > 0 && (
             <p className="branch-ready">
@@ -2822,22 +2853,16 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
             <p className="pull-request-error">{comparisonError}</p>
           )}
           {message && <p className="branch-success">{message}</p>}
-          <button
-            className="button button-primary button-small"
-            disabled={
-              creatingPullRequest ||
-              !headBranchExists ||
-              !baseBranch ||
-              baseBranch === headBranch ||
-              comparisonLoading ||
-              !comparison ||
-              comparison.ahead_by === 0
-            }
-            onClick={createPullRequest}
-          >
-            <GitPullRequest />
-            {creatingPullRequest ? "Creating pull request…" : "Create pull request"}
-          </button>
+          {comparison && comparison.ahead_by > 0 && (
+            <button
+              className="button button-primary button-small"
+              disabled={creatingPullRequest || comparisonLoading}
+              onClick={createPullRequest}
+            >
+              <GitPullRequest />
+              {creatingPullRequest ? "Creating pull request…" : "Create pull request"}
+            </button>
+          )}
         </>
       )}
       {error && <p className="pull-request-error">{error}</p>}
