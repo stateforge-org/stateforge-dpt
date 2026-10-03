@@ -74,7 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="StateForge DPT",
-        version="0.1.1",
+        version="0.1.4",
         docs_url="/api/docs",
         redoc_url=None,
     )
