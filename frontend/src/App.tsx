@@ -31,6 +31,7 @@ import {
   PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
+  Play,
   Plus,
   RefreshCw,
   Route,
@@ -426,6 +427,27 @@ function App() {
     }
   }
 
+  async function publishPlanThroughGit() {
+    if (!route.projectId) return false;
+    try {
+      const result = await api<{
+        revision: number;
+        repositories: number;
+        update_branch: string;
+        target_branch: string;
+      }>(`/api/projects/${route.projectId}/plan/publish-git`, { method: "POST" });
+      await loadDashboard(route.projectId);
+      setNotice(
+        `Published revision ${result.revision} through ${result.update_branch} `
+        + `and merged it into ${result.target_branch} across ${result.repositories} repositories.`,
+      );
+      return true;
+    } catch (caught) {
+      showError(caught);
+      return false;
+    }
+  }
+
   if (loading && !session) return <LoadingScreen />;
   if (error && !session) return <FatalError message={error} />;
   if (route.root === "login") {
@@ -515,6 +537,7 @@ function App() {
               dashboard={dashboard}
               onAddRepository={() => setRepositoryOpen(true)}
               onGenerate={generate}
+              onPublishGit={publishPlanThroughGit}
               onGitHubConnected={finishGitHubConnection}
               onOpenStep={(step) => setSelectedStep(step)}
               onOpenBlocker={(blocker) => {
@@ -1383,6 +1406,7 @@ function CurrentPage(props: {
   onOpenBlocker: (blocker: Blocker) => void;
   onOpenStep: (step: Step) => void;
   onGenerate: () => Promise<boolean>;
+  onPublishGit: () => Promise<boolean>;
   onGitHubConnected: () => Promise<void>;
   onReconcile: () => Promise<void>;
   onRemoveRepository: () => Promise<void>;
@@ -1394,7 +1418,7 @@ function CurrentPage(props: {
     case "roadmap": return <RoadmapPage dashboard={props.dashboard} onOpenBlocker={props.onOpenBlocker} onOpenStep={props.onOpenStep} />;
     case "work": return <WorkPage dashboard={props.dashboard} onOpenBlocker={props.onOpenBlocker} onOpenStep={props.onOpenStep} />;
     case "repositories": return <RepositoriesPage dashboard={props.dashboard} onAdd={props.onAddRepository} onRemoved={props.onRemoveRepository} />;
-    case "plan": return <PlanEditorPage dashboard={props.dashboard} onChanged={props.onPlanChanged} onGenerate={props.onGenerate} onOpenDelivery={props.onOpenStep} />;
+    case "plan": return <PlanEditorPage canPublishGit={Boolean(props.session?.authenticated)} dashboard={props.dashboard} onChanged={props.onPlanChanged} onGenerate={props.onGenerate} onPublishGit={props.onPublishGit} onOpenDelivery={props.onOpenStep} />;
     case "reconciliation": return <ReconciliationPage dashboard={props.dashboard} onOpenStep={props.onOpenStep} onReconcile={props.onReconcile} progress={props.reconciliationProgress} reconciling={props.reconciling} session={props.session} />;
     case "activity": return <ActivityPage activity={props.activity} />;
     case "settings": return <SettingsPage dashboard={props.dashboard} onChanged={props.onPlanChanged} />;
@@ -1442,7 +1466,11 @@ function EmptyMini({ title, text, action }: { title: string; text: string; actio
 }
 
 function StepRow({ step, onClick }: { step: Step; onClick: () => void }) {
-  return <button className="step-row" onClick={onClick}><code>{step.step_id}</code><div><strong>{step.title}</strong><span>{step.repository_alias}</span></div><StatusBadge status={step.computed_state} /><ChevronRight /></button>;
+  return <button className="step-row" onClick={onClick}><code>{step.step_id}</code><div><strong>{step.title}</strong><span>{step.repository_alias}</span></div><ContextStatusPill step={step} /><StatusBadge status={step.computed_state} /><ChevronRight /></button>;
+}
+
+function ContextStatusPill({ step }: { step: Step }) {
+  return <span className={`context-status-pill context-status-${step.context_readiness.state}`} title={step.context_readiness.reasons.join(" · ") || "Implementation context is approved"}><ShieldCheck />{step.context_readiness.ready ? "Context ready" : step.context_readiness.state.replaceAll("_", " ")}</span>;
 }
 
 function RepositoryHealth({ repository }: { repository: Repository }) {
@@ -1477,7 +1505,7 @@ function RoadmapPage({ dashboard, onOpenBlocker, onOpenStep }: { dashboard: Dash
           const levelBlockers = blockersByLevel.get(index) || [];
           return [
             ...(levelBlockers.length ? [<RoadmapBlockerColumn blockers={levelBlockers} key={`blockers-${index}`} level={index} onOpen={onOpenBlocker} />] : []),
-            <div className="roadmap-stage" key={`steps-${index}`}><div className="stage-label"><span>{String(index + 1).padStart(2, "0")}</span><small>{index === 0 ? "Foundation" : `Dependency level ${index}`}</small></div><div className="stage-steps">{layer.map((step) => <button className={`roadmap-node node-${step.computed_state}`} key={step.step_id} onClick={() => onOpenStep(step)}><header><code>{step.step_id}</code><StatusBadge status={step.computed_state} /></header><strong>{step.title}</strong><footer><span>{step.repository_alias}</span><span>{step.blockers.some((blocker) => blocker.is_active) ? `${step.blockers.filter((blocker) => blocker.is_active).length} GitHub blocker${step.blockers.filter((blocker) => blocker.is_active).length === 1 ? "" : "s"}` : step.depends_on.length ? `After ${step.depends_on.join(", ")}` : "No dependencies"}</span></footer></button>)}</div>{index < layers.length - 1 && <div className="roadmap-arrow"><ArrowRight /></div>}</div>,
+            <div className="roadmap-stage" key={`steps-${index}`}><div className="stage-label"><span>{String(index + 1).padStart(2, "0")}</span><small>{index === 0 ? "Foundation" : `Dependency level ${index}`}</small></div><div className="stage-steps">{layer.map((step) => <button className={`roadmap-node node-${step.computed_state}`} key={step.step_id} onClick={() => onOpenStep(step)}><header><code>{step.step_id}</code><StatusBadge status={step.computed_state} /></header><strong>{step.title}</strong><ContextStatusPill step={step} /><footer><span>{step.repository_alias}</span><span>{step.blockers.some((blocker) => blocker.is_active) ? `${step.blockers.filter((blocker) => blocker.is_active).length} GitHub blocker${step.blockers.filter((blocker) => blocker.is_active).length === 1 ? "" : "s"}` : step.depends_on.length ? `After ${step.depends_on.join(", ")}` : "No dependencies"}</span></footer></button>)}</div>{index < layers.length - 1 && <div className="roadmap-arrow"><ArrowRight /></div>}</div>,
           ];
         })}</div> : <EmptyState icon={<Network />} title="Nothing matches this view" description="Select at least one repository or clear the search." />}
       </section>
@@ -1703,6 +1731,7 @@ function WorkCard({ step, onOpen }: { step: Step; onOpen: () => void }) {
         <span>{step.repository_alias}</span>
       </div>
       <strong>{step.title}</strong>
+      <ContextStatusPill step={step} />
       {step.blockers.some((blocker) => blocker.is_active) && (
         <span className="work-card-blockers">
           <Bug />
@@ -2220,6 +2249,12 @@ function StepDetail({ dashboard, session, step, onChanged, onClose, onOpenBlocke
   const [history, setHistory] = useState<Step[]>([]);
   const [pullRequestOpen, setPullRequestOpen] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [inspectingContext, setInspectingContext] = useState(false);
+  const [approvingContext, setApprovingContext] = useState(false);
+  const [packageLoading, setPackageLoading] = useState(false);
+  const [verificationAction, setVerificationAction] = useState<string | null>(null);
+  const [implementationPackage, setImplementationPackage] = useState<{ package_hash: string; markdown: string } | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
   const dependencies = step.depends_on
     .map((id) => dashboard.steps.find((candidate) => candidate.step_id === id))
     .filter((value): value is Step => Boolean(value));
@@ -2304,6 +2339,101 @@ function StepDetail({ dashboard, session, step, onChanged, onClose, onOpenBlocke
       );
     } finally {
       setCreatingIssue(false);
+    }
+  }
+
+  async function inspectContext() {
+    setInspectingContext(true);
+    setContextError(null);
+    try {
+      await api(`/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/context/inspect`, { method: "POST" });
+      await onChanged();
+    } catch (caught) {
+      setContextError(caught instanceof Error ? caught.message : "Context could not be inspected");
+    } finally {
+      setInspectingContext(false);
+    }
+  }
+
+  async function approveContext() {
+    setApprovingContext(true);
+    setContextError(null);
+    try {
+      await api(`/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/context/approve`, {
+        method: "POST",
+        body: JSON.stringify({ approved_by: session?.user?.login || "Local human" }),
+      });
+      await onChanged();
+    } catch (caught) {
+      setContextError(caught instanceof Error ? caught.message : "Context could not be approved");
+    } finally {
+      setApprovingContext(false);
+    }
+  }
+
+  async function createImplementationPackage() {
+    setPackageLoading(true);
+    setContextError(null);
+    try {
+      const result = await api<{ package_hash: string; markdown: string }>(
+        `/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/implementation-package`,
+        { method: "POST" },
+      );
+      setImplementationPackage(result);
+    } catch (caught) {
+      setContextError(caught instanceof Error ? caught.message : "Implementation package could not be created");
+    } finally {
+      setPackageLoading(false);
+    }
+  }
+
+  async function recordVerification(
+    verificationId: string,
+    status: "passed" | "failed" | "skipped" | "unavailable",
+  ) {
+    const evidence = window.prompt(
+      status === "passed"
+        ? "What evidence did you inspect?"
+        : "Record why this verification did not pass.",
+      "",
+    );
+    if (evidence === null) return;
+    setVerificationAction(verificationId);
+    setContextError(null);
+    try {
+      await api(`/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/verification/${verificationId}/record`, {
+        method: "POST",
+        body: JSON.stringify({
+          status,
+          recorded_by: session?.user?.login || "Local human",
+          evidence,
+        }),
+      });
+      await onChanged();
+    } catch (caught) {
+      setContextError(caught instanceof Error ? caught.message : "Verification evidence could not be recorded");
+    } finally {
+      setVerificationAction(null);
+    }
+  }
+
+  async function runVerification(verificationId: string, target: string) {
+    if (!window.confirm(`Run this command in its managed repository?\n\n${target}\n\nDPT runs the exact command without a shell and records its result.`)) return;
+    setVerificationAction(verificationId);
+    setContextError(null);
+    try {
+      await api(`/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/verification/${verificationId}/run`, {
+        method: "POST",
+        body: JSON.stringify({
+          approved_by: session?.user?.login || "Local human",
+          approved_target: target,
+        }),
+      });
+      await onChanged();
+    } catch (caught) {
+      setContextError(caught instanceof Error ? caught.message : "Verification command could not be run");
+    } finally {
+      setVerificationAction(null);
     }
   }
 
@@ -2438,6 +2568,26 @@ function StepDetail({ dashboard, session, step, onChanged, onClose, onOpenBlocke
           </div>
           {issueError && <p className="step-dialog-action-error">{issueError}</p>}
         </div>
+        <section className={`context-readiness context-readiness-${step.context_readiness.state}`}>
+          <div className="context-readiness-icon"><ShieldCheck /></div>
+          <div>
+            <span>Implementation readiness</span>
+            <strong>{step.context_readiness.ready ? "Context approved — ready to implement" : step.context_readiness.state.replaceAll("_", " ")}</strong>
+            {step.context_readiness.reasons.length ? (
+              <ul>{step.context_readiness.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            ) : <p>The milestone boundary, protected behavior, and proof are explicit.</p>}
+            <div className={`risk-pressure risk-pressure-${step.risk_assessment.level}`} title={step.risk_assessment.explanation}>
+              <span>Review pressure: {step.risk_assessment.level}</span>
+              {step.risk_assessment.factors.map((factor) => <small key={factor.kind}>{factor.explanation}</small>)}
+            </div>
+          </div>
+          <div className="context-readiness-actions">
+            <button className="button button-secondary button-small" disabled={inspectingContext} onClick={inspectContext} type="button"><RefreshCw />{inspectingContext ? "Inspecting…" : "Inspect context"}</button>
+            <button className="button button-secondary button-small" disabled={approvingContext || !step.context_resources.length} onClick={approveContext} type="button"><CheckCircle2 />{approvingContext ? "Approving…" : "Approve snapshot"}</button>
+            <button className="button button-primary button-small" disabled={!step.context_readiness.ready || packageLoading} onClick={createImplementationPackage} type="button"><Sparkles />{packageLoading ? "Building package…" : "Start implementation"}</button>
+          </div>
+        </section>
+        {contextError && <p className="step-dialog-action-error context-action-error">{contextError}</p>}
         {pullRequestOpen && (
           <div className="github-action-panel">
             <PullRequestBuilder dashboard={dashboard} step={step} />
@@ -2490,6 +2640,83 @@ function StepDetail({ dashboard, session, step, onChanged, onClose, onOpenBlocke
             </a>
           </div>
         </div>
+        <div className="detail-section milestone-context-section">
+          <span>Context contract</span>
+          {step.context_resources.length ? (
+            <div className="milestone-context-list">
+              {step.context_resources.map((resource) => (
+                <article className={`milestone-context-item context-role-border-${resource.role}`} key={resource.context_id}>
+                  <header><span><code>{resource.repository_alias}/{resource.path}</code><small>{resource.selector_kind.replaceAll("_", " ")}</small></span><strong>{resource.role.replaceAll("_", " ")}</strong></header>
+                  <p>{resource.explanation}</p>
+                  <footer><span>{resource.authority.replaceAll("_", " ")}</span><span>{resource.required ? "Required" : "Optional"}</span><span className={`context-observation context-observation-${resource.observation?.status || "uninspected"}`}>{resource.observation?.status.replaceAll("_", " ") || "not yet inspected"}</span></footer>
+                </article>
+              ))}
+            </div>
+          ) : <p className="muted-copy">No implementation context has been declared. Add it in the Plan editor.</p>}
+        </div>
+        <div className="detail-section milestone-verification-section">
+          <span>Verification contract</span>
+          {step.verification_requirements.length ? (
+            <div className="milestone-verification-list">
+              {step.verification_requirements.map((requirement) => (
+                <article className={requirement.observation ? `verification-${requirement.observation.status}` : "verification-not-recorded"} key={requirement.verification_id}>
+                  <ListChecks />
+                  <span>
+                    <strong>{requirement.kind.replaceAll("_", " ")} · {requirement.target}</strong>
+                    <small>{requirement.explanation}</small>
+                    {requirement.observation && (
+                      <span className="verification-observation">
+                        <b>{requirement.observation.stale ? `${requirement.observation.status} · stale` : requirement.observation.status}</b>
+                        <span>{requirement.observation.recorded_by} · {new Date(requirement.observation.observed_at).toLocaleString()}</span>
+                        {requirement.observation.evidence && <small>{requirement.observation.evidence}</small>}
+                        {requirement.observation.output_excerpt && <details><summary>Command output</summary><pre>{requirement.observation.output_excerpt}</pre></details>}
+                      </span>
+                    )}
+                  </span>
+                  <div className="verification-actions">
+                    {requirement.kind !== "human" && requirement.repository_id && (
+                      <button className="button button-secondary button-small" disabled={verificationAction === requirement.verification_id} onClick={() => runVerification(requirement.verification_id, requirement.target)} type="button"><Play />Run</button>
+                    )}
+                    <button className="button button-secondary button-small" disabled={verificationAction === requirement.verification_id} onClick={() => recordVerification(requirement.verification_id, "passed")} type="button"><CheckCircle2 />Pass</button>
+                    <button className="button button-secondary button-small" disabled={verificationAction === requirement.verification_id} onClick={() => recordVerification(requirement.verification_id, "failed")} type="button"><X />Fail</button>
+                  </div>
+                  {requirement.required && <em>Required</em>}
+                </article>
+              ))}
+            </div>
+          ) : <p className="muted-copy">No proof has been defined. The milestone cannot become context-ready.</p>}
+        </div>
+        {step.impact_analysis && (
+          <div className="detail-section milestone-impact-section">
+            <span>Pull request change surface</span>
+            <div className="impact-summary-grid">
+              <div className="impact-expected"><strong>{step.impact_analysis.expected_changes.length}</strong><span>Expected files changed</span></div>
+              <div className={step.impact_analysis.unexpected_changes.length ? "impact-unexpected active" : "impact-unexpected"}><strong>{step.impact_analysis.unexpected_changes.length}</strong><span>Unexpected files</span></div>
+              <div className={step.impact_analysis.untouched_expected.length ? "impact-untouched active" : "impact-untouched"}><strong>{step.impact_analysis.untouched_expected.length}</strong><span>Expected areas untouched</span></div>
+              <div className={step.impact_analysis.preserved_resources_changed.length ? "impact-preserved active" : "impact-preserved"}><strong>{step.impact_analysis.preserved_resources_changed.length}</strong><span>Preserved files changed</span></div>
+              <div><strong>{step.impact_analysis.verification_resources_changed.length}</strong><span>Verification files changed</span></div>
+              <div><strong>{step.impact_analysis.checks_state || "—"}</strong><span>GitHub checks</span></div>
+            </div>
+            {step.impact_analysis.unexpected_changes.length > 0 && <div className="impact-path-list"><strong>Outside the declared change surface — review these files on GitHub</strong>{step.impact_analysis.unexpected_changes.map((path) => <code key={path}>{path}</code>)}</div>}
+            {step.impact_analysis.preserved_resources_changed.length > 0 && <div className="impact-path-list impact-preserved-list"><strong>Protected context changed — verify these files carefully</strong>{step.impact_analysis.preserved_resources_changed.map((path) => <code key={path}>{path}</code>)}</div>}
+          </div>
+        )}
+        {step.regression_history.length > 0 && (
+          <div className="detail-section regression-memory-section">
+            <span>Regression memory</span>
+            <p className="regression-memory-intro">Resolved GitHub blockers remain attached to future implementation packages so the same context gap is not rediscovered from scratch.</p>
+            <div className="regression-memory-list">
+              {step.regression_history.map((regression) => (
+                <article key={regression.blocker_id}>
+                  <header><Bug /><span><a href={regression.url} rel="noreferrer" target="_blank">{regression.issue}</a><strong>{regression.title}</strong></span><em>{regression.status}</em></header>
+                  {regression.matching_context_paths.length > 0 && <div><small>Previous corrective work touches this milestone’s context</small>{regression.matching_context_paths.map((path) => <code key={path}>{path}</code>)}</div>}
+                  {regression.context_gaps.length > 0 && <div><small>Corrective files outside the current context contract</small>{regression.context_gaps.map((path) => <code key={path}>{path}</code>)}</div>}
+                  {regression.implementation_package && <footer>Original package <code>{regression.implementation_package.package_hash.slice(0, 12)}</code></footer>}
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="detail-section blocker-section">
           <div className="detail-section-heading">
             <span>GitHub blockers</span>
@@ -2580,6 +2807,15 @@ function StepDetail({ dashboard, session, step, onChanged, onClose, onOpenBlocke
           )}
         </div>
       </section>
+      {implementationPackage && (
+        <div className="implementation-package-backdrop" onMouseDown={() => setImplementationPackage(null)}>
+          <section onMouseDown={(event) => event.stopPropagation()}>
+            <header><Sparkles /><div><strong>Agent-ready implementation package</strong><small>Deterministic package <code>{implementationPackage.package_hash.slice(0, 12)}</code> records exactly what the agent received.</small></div><button onClick={() => setImplementationPackage(null)} type="button"><X /></button></header>
+            <div className="implementation-package-actions"><button className="button button-primary" onClick={() => navigator.clipboard.writeText(implementationPackage.markdown)} type="button"><FileCode2 />Copy implementation instructions</button></div>
+            <pre>{implementationPackage.markdown}</pre>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

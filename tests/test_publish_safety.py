@@ -485,3 +485,64 @@ def test_explicit_force_still_requires_an_opt_in(
     assert response.status_code == 200
     assert response.json()["revision"] == 2
     assert load_plan(str(workspace.plan_path)).plan.project.revision == 2
+
+
+def test_git_publication_records_remote_revision_without_touching_active_checkout(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace.edit_title("[TASK][MVP] Publish through Git")
+    before = workspace.plan_path.read_bytes()
+    calls: list[dict[str, object]] = []
+
+    def publish_stub(
+        path_value: str,
+        filename: str,
+        content: str,
+        update_branch: str,
+        target_branch: str,
+        commit_message: str,
+        author_name: str,
+        author_email: str,
+        access_token: str | None,
+    ) -> dict[str, str | bool]:
+        calls.append(
+            {
+                "path": path_value,
+                "filename": filename,
+                "content": content,
+                "update_branch": update_branch,
+                "target_branch": target_branch,
+                "commit_message": commit_message,
+                "author_name": author_name,
+                "author_email": author_email,
+                "access_token": access_token,
+            }
+        )
+        return {
+            "update_branch": update_branch,
+            "target_branch": target_branch,
+            "update_branch_created": True,
+            "update_commit": "a" * 40,
+            "target_commit": "b" * 40,
+        }
+
+    monkeypatch.setattr("stateforge_dpt.service.publish_plan_branches", publish_stub)
+    result = workspace.app.state.service.publish_project_plan_to_git(
+        workspace.project_id,
+        "token",
+        123,
+        "maintainer",
+        "Maintainer",
+    )
+
+    assert result["revision"] == 2
+    assert result["update_branch"] == "mvp/update-dpt-plan"
+    assert result["target_branch"] == "mvp/implementation"
+    assert len(calls) == 1
+    assert "Publish through Git" in str(calls[0]["content"])
+    assert calls[0]["author_email"] == "123+maintainer@users.noreply.github.com"
+    assert workspace.plan_path.read_bytes() == before
+    status = workspace.app.state.service.project_plan_sources(workspace.project_id)
+    assert status["sources"][0]["source_kind"] == "remote"
+    assert status["sources"][0]["revision"] == 2
+    assert status["sources"][0]["status"] == "current"

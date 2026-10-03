@@ -108,7 +108,132 @@ export type Artifact = {
   is_draft: number;
   is_merged: number;
   checks_state: string | null;
+  changed_files: Array<{
+    filename: string;
+    status?: string;
+    additions?: number;
+    deletions?: number;
+    changes?: number;
+  }>;
   updated_at: string;
+};
+
+export type ContextRole =
+  | "must_understand"
+  | "expected_to_change"
+  | "must_verify"
+  | "must_preserve";
+
+export type ContextAuthority =
+  | "canonical"
+  | "reference"
+  | "generated"
+  | "compatibility"
+  | "deprecated"
+  | "historical";
+
+export type ContextSelectorKind =
+  | "file"
+  | "directory"
+  | "glob"
+  | "symbol"
+  | "protobuf"
+  | "json_schema"
+  | "markdown_heading"
+  | "test_case";
+
+export type ContextObservation = {
+  context_id: string;
+  observed_commit: string | null;
+  blob_hash: string | null;
+  selector_status: string;
+  status:
+    | "current"
+    | "changed"
+    | "missing"
+    | "selector_missing"
+    | "repository_unavailable";
+  details: Record<string, unknown>;
+  observed_at: string;
+};
+
+export type ContextResource = {
+  context_id: string;
+  repository_id: string;
+  repository_alias: string;
+  github_full_name: string;
+  repository_local_path: string | null;
+  path: string;
+  selector_kind: ContextSelectorKind;
+  selector_value: string | null;
+  role: ContextRole;
+  explanation: string;
+  required: boolean;
+  authority: ContextAuthority;
+  observation: ContextObservation | null;
+};
+
+export type VerificationRequirement = {
+  verification_id: string;
+  kind:
+    | "test"
+    | "command"
+    | "schema"
+    | "generated"
+    | "typecheck"
+    | "lint"
+    | "integration"
+    | "human";
+  repository_id: string | null;
+  repository_alias: string | null;
+  target: string;
+  explanation: string;
+  required: boolean;
+  observation: VerificationObservation | null;
+};
+
+export type VerificationObservation = {
+  verification_id: string;
+  status: "passed" | "failed" | "skipped" | "unavailable";
+  evidence: string;
+  output_excerpt: string | null;
+  exit_code: number | null;
+  observed_commit: string | null;
+  recorded_by: string;
+  observed_at: string;
+  stale: boolean;
+};
+
+export type ContextReadiness = {
+  state:
+    | "ready"
+    | "needs_context_review"
+    | "missing_required_context"
+    | "verification_incomplete"
+    | "blocked_by_github"
+    | "not_ready";
+  ready: boolean;
+  reasons: string[];
+};
+
+export type ImpactAnalysis = {
+  pull_request_artifact_id: string;
+  pull_request_number: number;
+  changed_files: string[];
+  expected_changes: string[];
+  unexpected_changes: string[];
+  untouched_expected: string[];
+  verification_resources_changed: string[];
+  preserved_resources_changed: string[];
+  verification_results: Array<{
+    verification_id: string;
+    kind: VerificationRequirement["kind"];
+    required: boolean;
+    status: VerificationObservation["status"] | "not_recorded" | "stale";
+    observed_commit: string | null;
+  }>;
+  checks_state: string | null;
+  analysis_hash: string;
 };
 
 export type StepState =
@@ -137,6 +262,43 @@ export type Step = {
   sort_order: number;
   depends_on: string[];
   artifacts: Artifact[];
+  context_resources: ContextResource[];
+  verification_requirements: VerificationRequirement[];
+  context_approval: null | {
+    approval_id: string;
+    plan_revision: number;
+    approved_by: string;
+    approved_at: string;
+    snapshot: Record<string, { blob_hash: string | null; observed_commit: string | null }>;
+  };
+  context_readiness: ContextReadiness;
+  impact_analysis: ImpactAnalysis | null;
+  risk_assessment: {
+    level: "green" | "amber" | "red";
+    explanation: string;
+    factors: Array<{
+      severity: "amber" | "red";
+      kind: string;
+      explanation: string;
+    }>;
+  };
+  regression_history: Array<{
+    blocker_id: string;
+    issue: string;
+    title: string;
+    status: "resolved" | "dismissed";
+    url: string;
+    corrective_changed_files: string[];
+    matching_context_paths: string[];
+    original_step_ids: string[];
+    review_findings: Array<{ author: string | null; body: string; url: string | null }>;
+    context_gaps: string[];
+    implementation_package: null | {
+      package_id: string;
+      package_hash: string;
+      created_at: string;
+    };
+  }>;
 };
 
 export type Blocker = Artifact & {

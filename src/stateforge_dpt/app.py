@@ -24,6 +24,8 @@ from stateforge_dpt.models import (
     BlockerCreate,
     BranchCreate,
     CloneRepositoryRequest,
+    ContextApprovalRequest,
+    ContextContractUpdate,
     GenerateRequest,
     PlanImportRequest,
     PlanSourceBranchUpdate,
@@ -33,6 +35,8 @@ from stateforge_dpt.models import (
     RepositoryCreate,
     StepCreate,
     StepUpdate,
+    VerificationRecordRequest,
+    VerificationRunRequest,
 )
 from stateforge_dpt.security import SecretStore
 from stateforge_dpt.service import DPTError, DPTService
@@ -224,9 +228,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dependency_records: list[dict[str, object]] = []
         milestone_issues: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for repository in repositories:
-            for artifact in artifact_batches.get(
-                str(repository["repository_id"]), []
-            ):
+            for artifact in artifact_batches.get(str(repository["repository_id"]), []):
                 labels = {
                     str(label.get("name"))
                     for label in artifact.get("labels", [])
@@ -318,6 +320,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "repository_count": repository_count,
                     "artifacts": total,
                 }
+            )
+        context_steps = [
+            step
+            for step in service.dashboard(project_id)["steps"]
+            if step.get("context_resources")
+        ]
+        if report and context_steps:
+            await report(
+                {
+                    "phase": "context_integrity",
+                    "title": "Checking implementation context",
+                    "detail": (
+                        f"Resolving portable paths and selectors for "
+                        f"{len(context_steps)} milestones without modifying files."
+                    ),
+                    "repository": None,
+                    "repository_index": repository_count,
+                    "repository_count": repository_count,
+                    "artifacts": total,
+                }
+            )
+        for step in context_steps:
+            await asyncio.to_thread(
+                service.inspect_step_context, project_id, str(step["step_id"])
             )
         service.dashboard(project_id)
         return {
@@ -580,6 +606,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return {"destination_path": str(destination)}
 
+    @app.get("/api/repositories/{repository_id}/tree")
+    async def repository_tree(
+        repository_id: str,
+        query: str = "",
+        limit: int = 250,
+    ) -> dict[str, object]:
+        return service.repository_tree(repository_id, query, limit)
+
+    @app.get("/api/repositories/{repository_id}/resource-preview")
+    async def repository_resource_preview(
+        repository_id: str,
+        path: str,
+    ) -> dict[str, object]:
+        return service.repository_resource_preview(repository_id, path)
+
     @app.post("/api/projects/{project_id}/steps", status_code=201)
     async def add_step(project_id: str, request: StepCreate) -> dict[str, object]:
         return service.create_step(project_id, request)
@@ -591,6 +632,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: StepUpdate,
     ) -> dict[str, object]:
         return service.update_step(project_id, step_id, request)
+
+    @app.put("/api/projects/{project_id}/steps/{step_id}/context")
+    async def update_step_context(
+        project_id: str,
+        step_id: str,
+        request: ContextContractUpdate,
+    ) -> dict[str, object]:
+        return service.update_context_contract(project_id, step_id, request)
+
+    @app.post("/api/projects/{project_id}/steps/{step_id}/context/inspect")
+    async def inspect_step_context(project_id: str, step_id: str) -> dict[str, object]:
+        return service.inspect_step_context(project_id, step_id)
+
+    @app.post("/api/projects/{project_id}/steps/{step_id}/context/approve")
+    async def approve_step_context(
+        project_id: str,
+        step_id: str,
+        request: ContextApprovalRequest,
+    ) -> dict[str, object]:
+        return service.approve_step_context(project_id, step_id, request.approved_by)
+
+    @app.post("/api/projects/{project_id}/steps/{step_id}/implementation-package")
+    async def create_implementation_package(
+        project_id: str, step_id: str
+    ) -> dict[str, object]:
+        return service.implementation_package(project_id, step_id)
+
+    @app.post(
+        "/api/projects/{project_id}/steps/{step_id}/verification/"
+        "{verification_id}/record"
+    )
+    async def record_step_verification(
+        project_id: str,
+        step_id: str,
+        verification_id: str,
+        request: VerificationRecordRequest,
+    ) -> dict[str, object]:
+        return service.record_verification(
+            project_id,
+            step_id,
+            verification_id,
+            request.status,
+            request.recorded_by,
+            request.evidence,
+        )
+
+    @app.post(
+        "/api/projects/{project_id}/steps/{step_id}/verification/{verification_id}/run"
+    )
+    async def run_step_verification(
+        project_id: str,
+        step_id: str,
+        verification_id: str,
+        request: VerificationRunRequest,
+    ) -> dict[str, object]:
+        return service.run_verification(
+            project_id,
+            step_id,
+            verification_id,
+            request.approved_by,
+            request.approved_target,
+        )
 
     @app.delete("/api/projects/{project_id}/steps/{step_id}", status_code=204)
     async def delete_step(project_id: str, step_id: str) -> Response:
@@ -668,11 +771,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project = service.project(project_id)
         step = service.step(project_id, step_id)
         milestone_issue = next(
-            (
-                artifact
-                for artifact in step["artifacts"]
-                if artifact["kind"] == "issue"
-            ),
+            (artifact for artifact in step["artifacts"] if artifact["kind"] == "issue"),
             None,
         )
         if milestone_issue is None:
@@ -701,8 +800,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        "A blocker must belong to a repository managed by this "
-                        "project"
+                        "A blocker must belong to a repository managed by this project"
                     ),
                 )
             try:
@@ -756,18 +854,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except GitHubError as error:
                 raise HTTPException(status_code=502, detail=str(error)) from error
 
-        if (
-            blocking_full_name.casefold()
-            == str(step["github_full_name"]).casefold()
-            and int(blocking_issue["number"]) == int(milestone_issue["number"])
+        if blocking_full_name.casefold() == str(
+            step["github_full_name"]
+        ).casefold() and int(blocking_issue["number"]) == int(
+            milestone_issue["number"]
         ):
             raise HTTPException(
                 status_code=422,
                 detail="A milestone cannot block itself",
             )
         if any(
-            str(blocker["github_full_name"]).casefold()
-            == blocking_full_name.casefold()
+            str(blocker["github_full_name"]).casefold() == blocking_full_name.casefold()
             and int(blocker["number"]) == int(blocking_issue["number"])
             for blocker in step["blockers"]
         ):
@@ -950,8 +1047,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "An active or merged pull request is already linked to this "
-                    "blocker"
+                    "An active or merged pull request is already linked to this blocker"
                 ),
             )
         try:
@@ -1226,6 +1322,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: GenerateRequest,
     ) -> dict[str, object]:
         return service.generate_project_files(project_id, request.force)
+
+    @app.post("/api/projects/{project_id}/plan/publish-git")
+    async def publish_plan_through_git(
+        project_id: str,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        current = await authenticated_session(session_token)
+        return await asyncio.to_thread(
+            service.publish_project_plan_to_git,
+            project_id,
+            str(current["access_token"]),
+            int(str(current["github_user_id"])),
+            str(current["github_login"]),
+            str(current["github_name"]) if current.get("github_name") else None,
+        )
 
     @app.post("/api/projects/{project_id}/reconcile")
     async def reconcile_project(

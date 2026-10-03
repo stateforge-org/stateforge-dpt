@@ -286,6 +286,8 @@ class GitHubClient:
             f"/repos/{full_name}/issues/{item['number']}/timeline",
         )
         review_comments: list[dict[str, Any]] = []
+        changed_files: list[dict[str, Any]] = []
+        checks_state: str | None = None
         if "pull_request" in item:
             pull = await self._request(
                 client,
@@ -298,11 +300,27 @@ class GitHubClient:
                 access_token,
                 f"/repos/{full_name}/pulls/{item['number']}/comments",
             )
+            changed_files = await self._paginated_items(
+                client,
+                access_token,
+                f"/repos/{full_name}/pulls/{item['number']}/files",
+            )
+            head_sha = pull.get("head", {}).get("sha")
+            if head_sha:
+                status = await self._request(
+                    client,
+                    access_token,
+                    "GET",
+                    f"/repos/{full_name}/commits/{head_sha}/status",
+                )
+                checks_state = str(status.get("state") or "pending")
             item = {**item, "pull_details": pull}
         return {
             **item,
             "timeline": timeline,
             "review_comments": review_comments,
+            "changed_files": changed_files,
+            "checks_state": checks_state,
         }
 
     async def _paginated_items(

@@ -117,6 +117,100 @@ class BlockerCreate(BaseModel):
         return self
 
 
+ContextRole = Literal[
+    "must_understand",
+    "expected_to_change",
+    "must_verify",
+    "must_preserve",
+]
+ContextAuthority = Literal[
+    "canonical",
+    "reference",
+    "generated",
+    "compatibility",
+    "deprecated",
+    "historical",
+]
+ContextSelectorKind = Literal[
+    "file",
+    "directory",
+    "glob",
+    "symbol",
+    "protobuf",
+    "json_schema",
+    "markdown_heading",
+    "test_case",
+]
+VerificationKind = Literal[
+    "test",
+    "command",
+    "schema",
+    "generated",
+    "typecheck",
+    "lint",
+    "integration",
+    "human",
+]
+
+
+class ContextResource(BaseModel):
+    """One portable source that bounds a milestone's implementation context."""
+
+    context_id: str = Field(pattern=r"^[A-Za-z0-9._-]+$", max_length=100)
+    repository_id: str
+    path: str = Field(min_length=1, max_length=1000)
+    selector_kind: ContextSelectorKind = "file"
+    selector_value: str | None = Field(default=None, max_length=1000)
+    role: ContextRole
+    explanation: str = Field(min_length=1, max_length=2000)
+    required: bool = True
+    authority: ContextAuthority = "canonical"
+
+
+class VerificationRequirement(BaseModel):
+    """Portable evidence required before a milestone is considered verified."""
+
+    verification_id: str = Field(pattern=r"^[A-Za-z0-9._-]+$", max_length=100)
+    kind: VerificationKind
+    repository_id: str | None = None
+    target: str = Field(min_length=1, max_length=2000)
+    explanation: str = Field(min_length=1, max_length=2000)
+    required: bool = True
+
+
+class ContextContractUpdate(BaseModel):
+    """Complete human-authored context and verification contract for one step."""
+
+    resources: list[ContextResource] = Field(default_factory=list, max_length=200)
+    verification: list[VerificationRequirement] = Field(
+        default_factory=list, max_length=100
+    )
+
+
+class ContextApprovalRequest(BaseModel):
+    """Human approval for the currently inspected context snapshot."""
+
+    approved_by: str = Field(min_length=1, max_length=200)
+
+
+VerificationStatus = Literal["passed", "failed", "skipped", "unavailable"]
+
+
+class VerificationRecordRequest(BaseModel):
+    """Human-recorded result for one declared verification requirement."""
+
+    status: VerificationStatus
+    recorded_by: str = Field(min_length=1, max_length=200)
+    evidence: str = Field(default="", max_length=20_000)
+
+
+class VerificationRunRequest(BaseModel):
+    """Explicit human authorization to run the currently declared command."""
+
+    approved_by: str = Field(min_length=1, max_length=200)
+    approved_target: str = Field(min_length=1, max_length=2000)
+
+
 class ProjectImportRequest(BaseModel):
     """Local Git clone containing a portable DPT project."""
 
@@ -158,6 +252,33 @@ class PortableRepository(BaseModel):
     responsibility: str = Field(default="", max_length=300)
 
 
+class PortableContextResource(BaseModel):
+    """Repository-relative context intent stored in the portable plan."""
+
+    context_id: str = Field(pattern=r"^[A-Za-z0-9._-]+$", max_length=100)
+    repository_alias: str
+    path: str = Field(min_length=1, max_length=1000)
+    selector_kind: ContextSelectorKind = "file"
+    selector_value: str | None = Field(default=None, max_length=1000)
+    role: ContextRole
+    explanation: str = Field(min_length=1, max_length=2000)
+    required: bool = True
+    authority: ContextAuthority = "canonical"
+    sort_order: int = Field(ge=0)
+
+
+class PortableVerificationRequirement(BaseModel):
+    """Repository-relative proof requirement stored in the portable plan."""
+
+    verification_id: str = Field(pattern=r"^[A-Za-z0-9._-]+$", max_length=100)
+    kind: VerificationKind
+    repository_alias: str | None = None
+    target: str = Field(min_length=1, max_length=2000)
+    explanation: str = Field(min_length=1, max_length=2000)
+    required: bool = True
+    sort_order: int = Field(ge=0)
+
+
 class PortableStep(BaseModel):
     """Lossless implementation milestone stored in the portable plan."""
 
@@ -169,6 +290,10 @@ class PortableStep(BaseModel):
     branch_name: str = Field(min_length=1, max_length=240)
     depends_on: list[str] = Field(default_factory=list)
     sort_order: int = Field(ge=0)
+    context_resources: list[PortableContextResource] = Field(default_factory=list)
+    verification_requirements: list[PortableVerificationRequirement] = Field(
+        default_factory=list
+    )
 
 
 class PortablePlan(BaseModel):
@@ -213,6 +338,36 @@ class PortablePlan(BaseModel):
                 )
             if step.step_id in step.depends_on:
                 raise ValueError(f"Step {step.step_id} cannot depend on itself")
+            context_ids = [item.context_id for item in step.context_resources]
+            verification_ids = [
+                item.verification_id for item in step.verification_requirements
+            ]
+            if len(set(context_ids)) != len(context_ids):
+                raise ValueError(f"Step {step.step_id} repeats a context resource")
+            if len(set(verification_ids)) != len(verification_ids):
+                raise ValueError(
+                    f"Step {step.step_id} repeats a verification requirement"
+                )
+            for resource in step.context_resources:
+                if resource.repository_alias not in alias_set:
+                    raise ValueError(
+                        f"Step {step.step_id} context references unknown repository "
+                        f"{resource.repository_alias}"
+                    )
+                parts = resource.path.replace("\\", "/").split("/")
+                if resource.path.startswith("/") or ".." in parts:
+                    raise ValueError(
+                        f"Step {step.step_id} context path must be repository-relative"
+                    )
+            for requirement in step.verification_requirements:
+                if (
+                    requirement.repository_alias is not None
+                    and requirement.repository_alias not in alias_set
+                ):
+                    raise ValueError(
+                        f"Step {step.step_id} verification references unknown "
+                        f"repository {requirement.repository_alias}"
+                    )
             dependencies[step.step_id] = step.depends_on
 
         visiting: set[str] = set()

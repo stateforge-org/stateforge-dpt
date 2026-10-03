@@ -68,6 +68,101 @@ CREATE TABLE IF NOT EXISTS step_dependencies (
         REFERENCES steps(project_id, step_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS step_context_resources (
+    project_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    context_id TEXT NOT NULL,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    selector_kind TEXT NOT NULL,
+    selector_value TEXT,
+    role TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    required INTEGER NOT NULL DEFAULT 1,
+    authority TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(project_id, step_id, context_id),
+    FOREIGN KEY(project_id, step_id)
+        REFERENCES steps(project_id, step_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS step_verification_requirements (
+    project_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    verification_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    repository_id TEXT REFERENCES repositories(repository_id) ON DELETE SET NULL,
+    target TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    required INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(project_id, step_id, verification_id),
+    FOREIGN KEY(project_id, step_id)
+        REFERENCES steps(project_id, step_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS verification_observations (
+    project_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    verification_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '',
+    output_excerpt TEXT,
+    exit_code INTEGER,
+    observed_commit TEXT,
+    recorded_by TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(project_id, step_id, verification_id),
+    FOREIGN KEY(project_id, step_id, verification_id)
+        REFERENCES step_verification_requirements(
+            project_id, step_id, verification_id
+        ) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS context_observations (
+    project_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    context_id TEXT NOT NULL,
+    observed_commit TEXT,
+    blob_hash TEXT,
+    selector_status TEXT,
+    status TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '{}',
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(project_id, step_id, context_id),
+    FOREIGN KEY(project_id, step_id, context_id)
+        REFERENCES step_context_resources(project_id, step_id, context_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS context_approvals (
+    approval_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    plan_revision INTEGER NOT NULL,
+    approved_by TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    approved_at TEXT NOT NULL,
+    FOREIGN KEY(project_id, step_id)
+        REFERENCES steps(project_id, step_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS implementation_packages (
+    package_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    package_hash TEXT NOT NULL,
+    package_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_id, step_id)
+        REFERENCES steps(project_id, step_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS github_artifacts (
     artifact_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -91,6 +186,7 @@ CREATE TABLE IF NOT EXISTS github_artifacts (
     is_draft INTEGER NOT NULL DEFAULT 0,
     is_merged INTEGER NOT NULL DEFAULT 0,
     checks_state TEXT,
+    changed_files TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL,
     UNIQUE(repository_id, kind, number),
     FOREIGN KEY(repository_id)
@@ -163,6 +259,14 @@ CREATE INDEX IF NOT EXISTS idx_issue_dependencies_project
     ON github_issue_dependency_edges(project_id, blocked_artifact_id);
 CREATE INDEX IF NOT EXISTS idx_activities_project
     ON activities(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_context_step
+    ON step_context_resources(project_id, step_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_verification_step
+    ON step_verification_requirements(project_id, step_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_verification_observation_step
+    ON verification_observations(project_id, step_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_context_approvals_step
+    ON context_approvals(project_id, step_id, approved_at DESC);
 """
 
 
@@ -287,6 +391,11 @@ class Database:
             if "state_reason" not in artifact_columns:
                 connection.execute(
                     "ALTER TABLE github_artifacts ADD COLUMN state_reason TEXT"
+                )
+            if "changed_files" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE github_artifacts "
+                    "ADD COLUMN changed_files TEXT NOT NULL DEFAULT '[]'"
                 )
 
     @contextmanager

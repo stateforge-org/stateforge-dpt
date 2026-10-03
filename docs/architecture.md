@@ -66,6 +66,14 @@ or blocked. Reconciliation reports workflow violations, such as opening a pull
 request before its prerequisites are complete. Issues may be prepared in
 advance without changing the dependency graph.
 
+Milestones may also carry a portable context and verification contract. Context
+roles, authorities, selectors, explanations, and verification requirements are
+human-authored plan intent. Resource hashes, approvals, discovery decisions,
+implementation packages, command results, pull-request impact, and regression
+observations are local execution evidence. See
+[AI regression resistance](ai-regression-resistance.md) for the complete
+human-controlled workflow and security boundary.
+
 ## Generated-file safety
 
 The renderer is deterministic. DPT records the last digest written to each

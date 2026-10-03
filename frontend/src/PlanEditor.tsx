@@ -7,6 +7,7 @@ import {
   FileCode2,
   FolderGit2,
   GitBranch,
+  GitMerge,
   Layers3,
   Pencil,
   Plus,
@@ -22,8 +23,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { api } from "./api";
+import { ContextContractEditor } from "./ContextContractEditor";
 import { Markdown } from "./Markdown";
-import type { Dashboard, PlanSource, PlanSyncStatus, Repository, Step } from "./types";
+import type {
+  ContextResource,
+  Dashboard,
+  PlanSource,
+  PlanSyncStatus,
+  Repository,
+  Step,
+  VerificationRequirement,
+} from "./types";
 import {
   EmptyState,
   ErrorBanner,
@@ -39,12 +49,16 @@ export function PlanEditorPage({
   dashboard,
   onChanged,
   onGenerate,
+  onPublishGit,
   onOpenDelivery,
+  canPublishGit,
 }: {
   dashboard: Dashboard;
   onChanged: () => Promise<void>;
   onGenerate: () => Promise<boolean>;
+  onPublishGit: () => Promise<boolean>;
   onOpenDelivery: (step: Step) => void;
+  canPublishGit: boolean;
 }) {
   const [editorTarget, setEditorTarget] = useState<EditorTarget>(null);
   const [query, setQuery] = useState("");
@@ -52,7 +66,7 @@ export function PlanEditorPage({
   const [preview, setPreview] = useState<string | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [publishing, setPublishing] = useState(false);
+  const [publishing, setPublishing] = useState<"local" | "git" | null>(null);
   const [syncStatus, setSyncStatus] = useState<PlanSyncStatus | null>(null);
   const [syncLoading, setSyncLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -136,7 +150,7 @@ export function PlanEditorPage({
   }
 
   async function publish() {
-    setPublishing(true);
+    setPublishing("local");
     try {
       const published = await onGenerate();
       if (published) {
@@ -144,7 +158,20 @@ export function PlanEditorPage({
         setPublishOpen(false);
       }
     } finally {
-      setPublishing(false);
+      setPublishing(null);
+    }
+  }
+
+  async function publishThroughGit() {
+    setPublishing("git");
+    try {
+      const published = await onPublishGit();
+      if (published) {
+        setPreview(null);
+        setPublishOpen(false);
+      }
+    } finally {
+      setPublishing(null);
     }
   }
 
@@ -153,6 +180,12 @@ export function PlanEditorPage({
   const attachedRepositories = dashboard.repositories.filter(
     (repository) => repository.local_path,
   );
+  const allRepositoriesAttached = attachedRepositories.length === dashboard.repositories.length;
+  const releaseBranch = dashboard.project.release
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "") || "release";
+  const updateBranch = `${releaseBranch}/update-dpt-plan`;
 
   return (
     <>
@@ -293,26 +326,41 @@ export function PlanEditorPage({
           title={publishOpen ? `Publish revision ${dashboard.project.revision + 1}?` : `${dashboard.project.generated_filename} preview`}
         >
           {publishOpen && (
-            <section className="plan-publish-summary">
-              <div><strong>{dashboard.steps.length}</strong><span>steps in this revision</span></div>
-              <ArrowRight />
-              <div><strong>{attachedRepositories.length}</strong><span>local copies updated</span></div>
-              <div className="plan-publish-targets">
-                {attachedRepositories.map((repository) => (
-                  <span key={repository.repository_id}><FolderGit2 />{repository.alias}</span>
-                ))}
-              </div>
-            </section>
+            <>
+              <section className="plan-publish-summary">
+                <div><strong>{dashboard.steps.length}</strong><span>steps in this revision</span></div>
+                <ArrowRight />
+                <div><strong>{attachedRepositories.length}</strong><span>managed Git repositories</span></div>
+                <div className="plan-publish-targets">
+                  {dashboard.repositories.map((repository) => (
+                    <span className={repository.local_path ? undefined : "missing"} key={repository.repository_id}><FolderGit2 />{repository.alias}{repository.local_path ? "" : " · clone required"}</span>
+                  ))}
+                </div>
+              </section>
+              <section className="plan-git-publish-option">
+                <GitMerge />
+                <div>
+                  <strong>Update the shared canonical plan through Git</strong>
+                  <span>Commit <code>{dashboard.project.generated_filename}</code> to <code>{updateBranch}</code> in every repository, push it, then merge it into <code>{dashboard.project.plan_source_branch}</code>. Plan-branch content wins merge conflicts.</span>
+                  <small>Temporary worktrees preserve every currently checked-out developer branch. GitHub authentication and all local clones are required.</small>
+                </div>
+              </section>
+            </>
           )}
           <div className="plan-rendered-preview">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview}</ReactMarkdown>
           </div>
           <div className="modal-actions">
-            <button className="button button-ghost" disabled={publishing} onClick={() => { setPreview(null); setPublishOpen(false); }} type="button">Close</button>
+            <button className="button button-ghost" disabled={Boolean(publishing)} onClick={() => { setPreview(null); setPublishOpen(false); }} type="button">Close</button>
             {publishOpen && (
-              <button className="button button-primary" disabled={publishing || !attachedRepositories.length} onClick={publish} type="button">
-                <WandSparkles />{publishing ? "Publishing…" : `Publish revision ${dashboard.project.revision + 1}`}
-              </button>
+              <>
+                <button className="button button-secondary" disabled={Boolean(publishing) || !attachedRepositories.length} onClick={publish} type="button">
+                  <WandSparkles />{publishing === "local" ? "Writing…" : "Write local copies"}
+                </button>
+                <button className="button button-primary" disabled={Boolean(publishing) || !allRepositoriesAttached || !canPublishGit} onClick={publishThroughGit} title={!canPublishGit ? "Connect GitHub before publishing" : !allRepositoriesAttached ? "Attach every managed repository before publishing" : undefined} type="button">
+                  <GitMerge />{publishing === "git" ? "Committing, pushing & merging…" : `Commit, push & merge revision ${dashboard.project.revision + 1}`}
+                </button>
+              </>
             )}
           </div>
         </Modal>
@@ -525,6 +573,8 @@ function StepEditorModal({
   const [branch, setBranch] = useState(step?.branch_name || "");
   const [branchEdited, setBranchEdited] = useState(Boolean(step));
   const [dependencies, setDependencies] = useState<string[]>(step?.depends_on || []);
+  const [contextResources, setContextResources] = useState<ContextResource[]>(step?.context_resources || []);
+  const [verification, setVerification] = useState<VerificationRequirement[]>(step?.verification_requirements || []);
   const [dependencyQuery, setDependencyQuery] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -590,13 +640,14 @@ function StepEditorModal({
       depends_on: dependencies,
     };
     try {
+      let savedStep: Step;
       if (step) {
-        await api(`/api/projects/${dashboard.project.project_id}/steps/${step.step_id}`, {
+        savedStep = await api<Step>(`/api/projects/${dashboard.project.project_id}/steps/${step.step_id}`, {
           method: "PUT",
           body: JSON.stringify(body),
         });
       } else {
-        await api(`/api/projects/${dashboard.project.project_id}/steps`, {
+        savedStep = await api<Step>(`/api/projects/${dashboard.project.project_id}/steps`, {
           method: "POST",
           body: JSON.stringify({
             ...body,
@@ -605,6 +656,30 @@ function StepEditorModal({
           }),
         });
       }
+      await api(`/api/projects/${dashboard.project.project_id}/steps/${savedStep.step_id}/context`, {
+        method: "PUT",
+        body: JSON.stringify({
+          resources: contextResources.map((resource) => ({
+            context_id: resource.context_id,
+            repository_id: resource.repository_id,
+            path: resource.path,
+            selector_kind: resource.selector_kind,
+            selector_value: resource.selector_value,
+            role: resource.role,
+            explanation: resource.explanation,
+            required: resource.required,
+            authority: resource.authority,
+          })),
+          verification: verification.map((requirement) => ({
+            verification_id: requirement.verification_id,
+            kind: requirement.kind,
+            repository_id: requirement.repository_id,
+            target: requirement.target,
+            explanation: requirement.explanation,
+            required: requirement.required,
+          })),
+        }),
+      });
       await onSaved();
       onClose();
     } catch (caught) {
@@ -632,7 +707,14 @@ function StepEditorModal({
     }
   }
 
-  const valid = Boolean(repositoryId && name.trim() && requiredResult.trim() && branchName.trim());
+  const contextValid = contextResources.every((resource) =>
+    Boolean(resource.repository_id && resource.path.trim() && resource.explanation.trim()
+      && (["file", "directory", "glob"].includes(resource.selector_kind) || resource.selector_value?.trim())),
+  );
+  const verificationValid = verification.every((requirement) =>
+    Boolean(requirement.target.trim() && requirement.explanation.trim()),
+  );
+  const valid = Boolean(repositoryId && name.trim() && requiredResult.trim() && branchName.trim() && contextValid && verificationValid);
 
   return (
     <Modal
@@ -720,6 +802,14 @@ function StepEditorModal({
             {!dependencyCandidates.length && <p className="dependency-choice-empty">No steps match this search.</p>}
           </div>
         </section>
+
+        <ContextContractEditor
+          dashboard={dashboard}
+          resources={contextResources}
+          setResources={setContextResources}
+          setVerification={setVerification}
+          verification={verification}
+        />
 
         <footer className="visual-step-editor-actions">
           <div>

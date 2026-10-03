@@ -302,6 +302,8 @@ def test_repository_artifacts_include_timeline_and_review_comments(
             return [{"id": 201, "event": "commented"}]
         if path.endswith("/pulls/7/comments"):
             return [{"id": 301, "body": "Please rename this symbol."}]
+        if path.endswith("/pulls/7/files"):
+            return [{"filename": "src/provider.py", "status": "modified"}]
         if path.endswith("/pulls/7"):
             return {"merged_at": None}
         raise AssertionError(f"Unexpected GitHub path: {path}")
@@ -320,11 +322,15 @@ def test_repository_artifacts_include_timeline_and_review_comments(
     assert artifacts[0]["review_comments"] == [
         {"id": 301, "body": "Please rename this symbol."}
     ]
+    assert artifacts[0]["changed_files"] == [
+        {"filename": "src/provider.py", "status": "modified"}
+    ]
     assert requests == [
         "/repos/stateforge-org/stateforge-agent/issues",
         "/repos/stateforge-org/stateforge-agent/issues/7/timeline",
         "/repos/stateforge-org/stateforge-agent/pulls/7",
         "/repos/stateforge-org/stateforge-agent/pulls/7/comments",
+        "/repos/stateforge-org/stateforge-agent/pulls/7/files",
     ]
 
 
@@ -454,8 +460,7 @@ def test_issue_dependencies_use_github_native_blocked_by_endpoints(
     )
 
     base_path = (
-        "/repos/stateforge-org/stateforge-protocol/issues/5/"
-        "dependencies/blocked_by"
+        "/repos/stateforge-org/stateforge-protocol/issues/5/dependencies/blocked_by"
     )
     assert dependencies == [{"id": 111, "number": 11}]
     assert added["id"] == 111
@@ -721,7 +726,8 @@ def test_github_evidence_derives_progress_and_unlocks_dependencies(
     assert steps["P0"]["computed_state"] == "completed"
     assert steps["P1"]["computed_state"] == "pending"
     assert steps["P1"]["dependencies_complete"] is True
-    assert dashboard["metrics"]["actionable"] == 1
+    assert dashboard["metrics"]["actionable"] == 0
+    assert steps["P1"]["context_readiness"]["state"] == "verification_incomplete"
     assert dashboard["findings"] == []
 
 

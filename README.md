@@ -30,6 +30,9 @@ provide the delivery evidence. Each computer keeps its own local working copy.
   `STATEFORGE_DPT.md` and import it on another computer from a participating clone.
 - **Safe synchronization.** Refresh the shared plan without switching branches.
   Conflicts and unpublished local edits are surfaced, not silently overwritten.
+- **Regression-resistant implementation.** Define cross-repository context,
+  protected behavior, and verification before work begins; review the exact
+  change surface and retain relevant bug history afterward.
 
 ## Installation
 
@@ -129,6 +132,7 @@ and recovery through your normal development workflow.
 
 - [Configuration and troubleshooting](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/configuration.md)
 - [Architecture and plan format](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/architecture.md)
+- [AI regression-resistance workflow](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/ai-regression-resistance.md)
 - [Development and release guide](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/development.md)
 - [Issue tracker](https://github.com/stateforge-org/stateforge-dpt/issues)
 
