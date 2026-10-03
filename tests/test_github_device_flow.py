@@ -164,6 +164,14 @@ def test_milestone_pull_request_uses_selected_github_branches(
     ) -> list[str]:
         return ["main", "mvp/implementation", "mvp/provider-manifest-exchange"]
 
+    async def issue_dependencies(
+        _client: GitHubClient,
+        _access_token: str,
+        _full_name: str,
+        _issue_number: int,
+    ) -> list[dict[str, object]]:
+        return []
+
     async def compare_branches(
         _client: GitHubClient,
         _access_token: str,
@@ -235,6 +243,11 @@ def test_milestone_pull_request_uses_selected_github_branches(
         GitHubClient,
         "repository_branches",
         repository_branches,
+    )
+    monkeypatch.setattr(
+        GitHubClient,
+        "issue_dependencies",
+        issue_dependencies,
     )
     monkeypatch.setattr(GitHubClient, "compare_branches", compare_branches)
     monkeypatch.setattr(
@@ -315,6 +328,7 @@ def test_milestone_pull_request_uses_selected_github_branches(
         "plan_applying",
         "fetching",
         "caching",
+        "dependencies",
         "validating",
     ]
     assert reconciliation_events[2]["repository"] == (

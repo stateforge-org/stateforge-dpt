@@ -87,11 +87,16 @@ export type GitHubTimelineItem = {
 
 export type Artifact = {
   artifact_id: string;
+  repository_id: string;
+  repository_alias: string;
+  github_full_name: string;
+  github_issue_id: number | null;
   kind: "issue" | "pull_request";
   number: number;
   title: string;
   body: string | null;
   state: "open" | "closed";
+  state_reason: "completed" | "not_planned" | null;
   html_url: string;
   author_login: string | null;
   timeline: GitHubTimelineItem[];
@@ -127,8 +132,19 @@ export type Step = {
   computed_state: StepState;
   observed_state: StepState | null;
   dependencies_complete: boolean;
+  blockers_clear: boolean;
+  blockers: Blocker[];
   sort_order: number;
   depends_on: string[];
+  artifacts: Artifact[];
+};
+
+export type Blocker = Artifact & {
+  blocker_id: string;
+  status: "active" | "resolved" | "dismissed";
+  is_active: boolean;
+  blocked_step_ids: string[];
+  suggested_branch: string;
   artifacts: Artifact[];
 };
 
@@ -143,9 +159,12 @@ export type Dashboard = {
   project: Project;
   repositories: Repository[];
   steps: Step[];
+  blockers: Blocker[];
   metrics: Record<StepState, number> & {
     actionable: number;
     findings: number;
+    active_blockers: number;
+    blocked_milestones: number;
   };
   findings: ReconciliationFinding[];
 };

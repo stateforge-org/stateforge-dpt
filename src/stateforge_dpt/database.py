@@ -75,9 +75,11 @@ CREATE TABLE IF NOT EXISTS github_artifacts (
     step_id TEXT,
     kind TEXT NOT NULL,
     number INTEGER NOT NULL,
+    github_issue_id INTEGER,
     title TEXT NOT NULL,
     body TEXT,
     state TEXT NOT NULL,
+    state_reason TEXT,
     html_url TEXT NOT NULL,
     author_login TEXT,
     timeline TEXT NOT NULL DEFAULT '[]',
@@ -93,6 +95,16 @@ CREATE TABLE IF NOT EXISTS github_artifacts (
     UNIQUE(repository_id, kind, number),
     FOREIGN KEY(repository_id)
         REFERENCES repositories(repository_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS github_issue_dependency_edges (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    blocked_artifact_id TEXT NOT NULL
+        REFERENCES github_artifacts(artifact_id) ON DELETE CASCADE,
+    blocking_artifact_id TEXT NOT NULL
+        REFERENCES github_artifacts(artifact_id) ON DELETE CASCADE,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(blocked_artifact_id, blocking_artifact_id)
 );
 
 CREATE TABLE IF NOT EXISTS device_authorizations (
@@ -147,6 +159,8 @@ CREATE INDEX IF NOT EXISTS idx_steps_repository
     ON steps(repository_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_artifacts_step
     ON github_artifacts(project_id, step_id);
+CREATE INDEX IF NOT EXISTS idx_issue_dependencies_project
+    ON github_issue_dependency_edges(project_id, blocked_artifact_id);
 CREATE INDEX IF NOT EXISTS idx_activities_project
     ON activities(project_id, created_at DESC);
 """
@@ -265,6 +279,14 @@ class Database:
                 connection.execute(
                     "ALTER TABLE github_artifacts "
                     "ADD COLUMN timeline TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "github_issue_id" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE github_artifacts ADD COLUMN github_issue_id INTEGER"
+                )
+            if "state_reason" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE github_artifacts ADD COLUMN state_reason TEXT"
                 )
 
     @contextmanager

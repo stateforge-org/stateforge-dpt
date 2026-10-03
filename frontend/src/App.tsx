@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Blocks,
+  Bug,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -21,6 +22,7 @@ import {
   GitPullRequest,
   Layers3,
   LayoutDashboard,
+  Link2,
   ListChecks,
   LockKeyhole,
   LogOut,
@@ -37,6 +39,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  Unlink,
   UserPlus,
   Users,
   X,
@@ -61,6 +64,7 @@ import { PlanEditorPage } from "./PlanEditor";
 import type {
   Activity,
   Artifact,
+  Blocker,
   Dashboard,
   DeviceAuthorization,
   DeviceAuthorizationPoll,
@@ -123,6 +127,7 @@ type ReconciliationPhase =
   | "plan_applying"
   | "fetching"
   | "caching"
+  | "dependencies"
   | "validating"
   | "updating";
 
@@ -227,6 +232,7 @@ function App() {
   const [importProjectOpen, setImportProjectOpen] = useState(false);
   const [repositoryOpen, setRepositoryOpen] = useState(false);
   const [selectedStep, setSelectedStep] = useState<Step | null>(null);
+  const [selectedBlocker, setSelectedBlocker] = useState<Blocker | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.localStorage.getItem("stateforge-dpt:sidebar-collapsed") === "true",
   );
@@ -251,6 +257,18 @@ function App() {
   const loadDashboard = useCallback(async (projectId: string) => {
     const value = await api<Dashboard>(`/api/projects/${projectId}`);
     setDashboard(value);
+    setSelectedStep((current) =>
+      current
+        ? value.steps.find((step) => step.step_id === current.step_id) || null
+        : null,
+    );
+    setSelectedBlocker((current) =>
+      current
+        ? value.blockers.find(
+            (blocker) => blocker.blocker_id === current.blocker_id,
+          ) || null
+        : null,
+    );
   }, []);
 
   const finishGitHubConnection = useCallback(async () => {
@@ -499,6 +517,10 @@ function App() {
               onGenerate={generate}
               onGitHubConnected={finishGitHubConnection}
               onOpenStep={(step) => setSelectedStep(step)}
+              onOpenBlocker={(blocker) => {
+                setSelectedStep(null);
+                setSelectedBlocker(blocker);
+              }}
               onReconcile={reconcile}
               onRemoveRepository={async () => {
                 await Promise.all([
@@ -532,7 +554,25 @@ function App() {
           session={session}
           step={selectedStep}
           onClose={() => setSelectedStep(null)}
+          onChanged={() => loadDashboard(dashboard.project.project_id)}
+          onOpenBlocker={(blocker) => {
+            setSelectedStep(null);
+            setSelectedBlocker(blocker);
+          }}
           onSelect={setSelectedStep}
+        />
+      )}
+      {selectedBlocker && dashboard && (
+        <BlockerDetail
+          blocker={selectedBlocker}
+          dashboard={dashboard}
+          session={session}
+          onChanged={() => loadDashboard(dashboard.project.project_id)}
+          onClose={() => setSelectedBlocker(null)}
+          onOpenStep={(step) => {
+            setSelectedBlocker(null);
+            setSelectedStep(step);
+          }}
         />
       )}
     </div>
@@ -1340,6 +1380,7 @@ function CurrentPage(props: {
   activity: Activity[];
   session: Session | null;
   onAddRepository: () => void;
+  onOpenBlocker: (blocker: Blocker) => void;
   onOpenStep: (step: Step) => void;
   onGenerate: () => Promise<boolean>;
   onGitHubConnected: () => Promise<void>;
@@ -1350,8 +1391,8 @@ function CurrentPage(props: {
   reconciling: boolean;
 }) {
   switch (props.page) {
-    case "roadmap": return <RoadmapPage dashboard={props.dashboard} onOpenStep={props.onOpenStep} />;
-    case "work": return <WorkPage dashboard={props.dashboard} onOpenStep={props.onOpenStep} />;
+    case "roadmap": return <RoadmapPage dashboard={props.dashboard} onOpenBlocker={props.onOpenBlocker} onOpenStep={props.onOpenStep} />;
+    case "work": return <WorkPage dashboard={props.dashboard} onOpenBlocker={props.onOpenBlocker} onOpenStep={props.onOpenStep} />;
     case "repositories": return <RepositoriesPage dashboard={props.dashboard} onAdd={props.onAddRepository} onRemoved={props.onRemoveRepository} />;
     case "plan": return <PlanEditorPage dashboard={props.dashboard} onChanged={props.onPlanChanged} onGenerate={props.onGenerate} onOpenDelivery={props.onOpenStep} />;
     case "reconciliation": return <ReconciliationPage dashboard={props.dashboard} onOpenStep={props.onOpenStep} onReconcile={props.onReconcile} progress={props.reconciliationProgress} reconciling={props.reconciling} session={props.session} />;
@@ -1375,6 +1416,7 @@ function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: {
         <MetricCard label="Trusted complete" value={`${completed}/${total}`} detail={`${progress}% of the current release`} tone="blue" icon={<ShieldCheck />} />
         <MetricCard label="Ready to build" value={String(dashboard.metrics.actionable)} detail="All prerequisites satisfied" tone="green" icon={<Sparkles />} />
         <MetricCard label="In review" value={String(dashboard.metrics.in_review)} detail="Open pull requests" tone="purple" icon={<GitPullRequest />} />
+        <MetricCard label="Active blockers" value={String(dashboard.metrics.active_blockers)} detail={`${dashboard.metrics.blocked_milestones} milestones affected`} tone="red" icon={<Bug />} />
         <MetricCard label="Reconciliation findings" value={String(dashboard.metrics.findings)} detail="Workflow rules requiring attention" tone="orange" icon={<FileDiff />} />
       </section>
       <section className="overview-grid">
@@ -1407,12 +1449,14 @@ function RepositoryHealth({ repository }: { repository: Repository }) {
   return <div className="repo-health-row"><span className={repository.clone_state ? "repo-health-icon healthy" : "repo-health-icon"}><FolderGit2 /></span><div><strong>{repository.github_full_name}</strong><span>{repository.clone_state ? `${repository.clone_state.branch} · ${repository.clone_state.dirty ? "uncommitted changes" : "clean"}` : "No local clone attached"}</span></div><span className={repository.clone_state ? "health-label healthy" : "health-label"}>{repository.clone_state ? "Attached" : "Setup"}</span></div>;
 }
 
-function RoadmapPage({ dashboard, onOpenStep }: { dashboard: Dashboard; onOpenStep: (step: Step) => void }) {
+function RoadmapPage({ dashboard, onOpenBlocker, onOpenStep }: { dashboard: Dashboard; onOpenBlocker: (blocker: Blocker) => void; onOpenStep: (step: Step) => void }) {
   const [selectedRepositories, setSelectedRepositories] = useState<string[]>(dashboard.repositories.map((repo) => repo.repository_id));
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"stages" | "graph">("stages");
   const visible = dashboard.steps.filter((step) => selectedRepositories.includes(step.repository_id) && (!query || `${step.step_id} ${step.title}`.toLowerCase().includes(query.toLowerCase())));
+  const visibleBlockers = dashboard.blockers.filter((blocker) => selectedRepositories.includes(blocker.repository_id) && (!query || `${blocker.github_full_name} ${blocker.number} ${blocker.title}`.toLowerCase().includes(query.toLowerCase())));
   const layers = dependencyLayers(visible);
+  const blockersByLevel = groupBlockersByPlanLevel(visibleBlockers, dependencyLayers(dashboard.steps));
   function toggle(id: string) { setSelectedRepositories((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]); }
   return (
     <>
@@ -1428,14 +1472,38 @@ function RoadmapPage({ dashboard, onOpenStep }: { dashboard: Dashboard; onOpenSt
         </div>
       </section>
       <section className="roadmap-canvas">
-        <div className="roadmap-key"><span><i className="key-completed" />Completed</span><span><i className="key-ready" />Ready</span><span><i className="key-review" />In review</span><span><i className="key-blocked" />Blocked</span></div>
-        {layers.length ? view === "graph" ? <DependencyGraph steps={visible} onOpenStep={onOpenStep} /> : <div className="roadmap-layers">{layers.map((layer, index) => <div className="roadmap-stage" key={index}><div className="stage-label"><span>{String(index + 1).padStart(2, "0")}</span><small>{index === 0 ? "Foundation" : `Dependency level ${index}`}</small></div><div className="stage-steps">{layer.map((step) => <button className={`roadmap-node node-${step.computed_state}`} key={step.step_id} onClick={() => onOpenStep(step)}><header><code>{step.step_id}</code><StatusBadge status={step.computed_state} /></header><strong>{step.title}</strong><footer><span>{step.repository_alias}</span><span>{step.depends_on.length ? `After ${step.depends_on.join(", ")}` : "No dependencies"}</span></footer></button>)}</div>{index < layers.length - 1 && <div className="roadmap-arrow"><ArrowRight /></div>}</div>)}</div> : <EmptyState icon={<Network />} title="Nothing matches this view" description="Select at least one repository or clear the search." />}
+        <div className="roadmap-key"><span><i className="key-completed" />Completed</span><span><i className="key-ready" />Ready</span><span><i className="key-review" />In review</span><span><i className="key-blocked" />Blocked</span><span><i className="key-github-blocker" />GitHub blocker</span></div>
+        {layers.length || visibleBlockers.length ? view === "graph" ? <DependencyGraph blockers={visibleBlockers} steps={visible} onOpenBlocker={onOpenBlocker} onOpenStep={onOpenStep} /> : <div className="roadmap-layers">{layers.flatMap((layer, index) => {
+          const levelBlockers = blockersByLevel.get(index) || [];
+          return [
+            ...(levelBlockers.length ? [<RoadmapBlockerColumn blockers={levelBlockers} key={`blockers-${index}`} level={index} onOpen={onOpenBlocker} />] : []),
+            <div className="roadmap-stage" key={`steps-${index}`}><div className="stage-label"><span>{String(index + 1).padStart(2, "0")}</span><small>{index === 0 ? "Foundation" : `Dependency level ${index}`}</small></div><div className="stage-steps">{layer.map((step) => <button className={`roadmap-node node-${step.computed_state}`} key={step.step_id} onClick={() => onOpenStep(step)}><header><code>{step.step_id}</code><StatusBadge status={step.computed_state} /></header><strong>{step.title}</strong><footer><span>{step.repository_alias}</span><span>{step.blockers.some((blocker) => blocker.is_active) ? `${step.blockers.filter((blocker) => blocker.is_active).length} GitHub blocker${step.blockers.filter((blocker) => blocker.is_active).length === 1 ? "" : "s"}` : step.depends_on.length ? `After ${step.depends_on.join(", ")}` : "No dependencies"}</span></footer></button>)}</div>{index < layers.length - 1 && <div className="roadmap-arrow"><ArrowRight /></div>}</div>,
+          ];
+        })}</div> : <EmptyState icon={<Network />} title="Nothing matches this view" description="Select at least one repository or clear the search." />}
       </section>
     </>
   );
 }
 
-function DependencyGraph({ steps, onOpenStep }: { steps: Step[]; onOpenStep: (step: Step) => void }) {
+function RoadmapBlockerColumn({ blockers, level, onOpen }: { blockers: Blocker[]; level: number; onOpen: (blocker: Blocker) => void }) {
+  return (
+    <div className="roadmap-stage roadmap-blocker-stage">
+      <div className="stage-label blocker-stage-label"><span>{level === 0 ? "BF" : `B${level}`}</span><small>{level === 0 ? "Foundation blockers" : `Blocker level ${level}`}</small></div>
+      <div className="stage-steps">
+        {blockers.map((blocker) => (
+          <button className={`roadmap-blocker-card roadmap-blocker-card-${blocker.status}`} key={blocker.blocker_id} onClick={() => onOpen(blocker)} type="button">
+            <header><code>{blocker.repository_alias} #{blocker.number}</code><span className={`blocker-node-status blocker-node-status-${blocker.status}`}>{blocker.status}</span></header>
+            <strong>{blocker.title}</strong>
+            <footer><span><Bug />Blocks {blocker.blocked_step_ids.join(", ")}</span><ChevronRight /></footer>
+          </button>
+        ))}
+      </div>
+      <div className="roadmap-arrow blocker-column-arrow"><ArrowRight /></div>
+    </div>
+  );
+}
+
+function DependencyGraph({ blockers, steps, onOpenBlocker, onOpenStep }: { blockers: Blocker[]; steps: Step[]; onOpenBlocker: (blocker: Blocker) => void; onOpenStep: (step: Step) => void }) {
   const [focusedStepId, setFocusedStepId] = useState<string | null>(null);
   const nodeWidth = 232;
   const nodeHeight = 96;
@@ -1444,14 +1512,29 @@ function DependencyGraph({ steps, onOpenStep }: { steps: Step[]; onOpenStep: (st
   const paddingX = 38;
   const paddingY = 58;
   const layers = dependencyLayers(steps);
-  const rows = Math.max(...layers.map((layer) => layer.length));
-  const width = Math.max(980, paddingX * 2 + layers.length * nodeWidth + Math.max(0, layers.length - 1) * columnGap);
+  const blockersByLevel = groupBlockersByPlanLevel(blockers, layers);
+  const columns: Array<
+    | { kind: "blockers"; level: number; blockers: Blocker[] }
+    | { kind: "steps"; level: number; steps: Step[] }
+  > = [];
+  layers.forEach((layer, level) => {
+    const levelBlockers = blockersByLevel.get(level) || [];
+    if (levelBlockers.length) columns.push({ kind: "blockers", level, blockers: levelBlockers });
+    columns.push({ kind: "steps", level, steps: layer });
+  });
+  const rows = Math.max(1, ...columns.map((column) => column.kind === "steps" ? column.steps.length : column.blockers.length));
+  const width = Math.max(980, paddingX * 2 + columns.length * nodeWidth + Math.max(0, columns.length - 1) * columnGap);
   const height = Math.max(500, paddingY + 30 + rows * nodeHeight + Math.max(0, rows - 1) * rowGap);
-  const nodes = layers.flatMap((layer, column) => layer.map((step, row) => ({
+  const nodes = columns.flatMap((column, columnIndex) => column.kind === "steps" ? column.steps.map((step, row) => ({
       step,
-      x: paddingX + column * (nodeWidth + columnGap),
+      x: paddingX + columnIndex * (nodeWidth + columnGap),
       y: paddingY + row * (nodeHeight + rowGap),
-    })));
+    })) : []);
+  const blockerNodes = columns.flatMap((column, columnIndex) => column.kind === "blockers" ? column.blockers.map((blocker, row) => ({
+      blocker,
+      x: paddingX + columnIndex * (nodeWidth + columnGap),
+      y: paddingY + row * (nodeHeight + rowGap),
+    })) : []);
   const positions = new Map(nodes.map((node) => [node.step.step_id, node]));
   const edges = nodes.flatMap((target) => target.step.depends_on.flatMap((dependencyId) => {
     const source = positions.get(dependencyId);
@@ -1469,6 +1552,22 @@ function DependencyGraph({ steps, onOpenStep }: { steps: Step[]; onOpenStep: (st
     }];
   }));
   const relatedStepIds = new Set<string>();
+  const blockerEdges = blockerNodes.flatMap(({ blocker, x, y }) =>
+    blocker.blocked_step_ids.flatMap((stepId) => {
+      const target = positions.get(stepId);
+      if (!target) return [];
+      const startX = x + nodeWidth;
+      const startY = y + nodeHeight / 2;
+      const endX = target.x;
+      const endY = target.y + nodeHeight / 2;
+      const bend = Math.max(42, (endX - startX) / 2);
+      return [{
+        id: `${blocker.blocker_id}-${stepId}`,
+        status: blocker.status,
+        path: `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`,
+      }];
+    }),
+  );
   if (focusedStepId) {
     relatedStepIds.add(focusedStepId);
     for (const edge of edges) {
@@ -1481,11 +1580,19 @@ function DependencyGraph({ steps, onOpenStep }: { steps: Step[]; onOpenStep: (st
 
   return (
     <div className="dependency-graph" style={{ height, width }}>
-      {layers.map((_, index) => <div className="dependency-level" key={index} style={{ left: paddingX + index * (nodeWidth + columnGap) }}><span>{String(index + 1).padStart(2, "0")}</span>{index === 0 ? "Foundation" : `Dependency level ${index}`}</div>)}
+      {columns.map((column, index) => column.kind === "blockers" ? <div className="dependency-level dependency-blocker-level" key={`blockers-${column.level}`} style={{ left: paddingX + index * (nodeWidth + columnGap), top: 16 }}><Bug /><span>{column.level === 0 ? "BF" : `B${column.level}`}</span>{column.level === 0 ? "Foundation blockers" : `Blocker level ${column.level}`}</div> : <div className="dependency-level" key={`steps-${column.level}`} style={{ left: paddingX + index * (nodeWidth + columnGap), top: 16 }}><span>{String(column.level + 1).padStart(2, "0")}</span>{column.level === 0 ? "Foundation" : `Dependency level ${column.level}`}</div>)}
       <svg aria-hidden="true" className="dependency-edges" height={height} width={width}>
-        <defs><marker id="dependency-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4"><path d="M 0 0 L 8 4 L 0 8 z" /></marker></defs>
+        <defs><marker id="dependency-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4"><path d="M 0 0 L 8 4 L 0 8 z" /></marker><marker id="blocker-arrow-active" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4"><path d="M 0 0 L 8 4 L 0 8 z" /></marker><marker id="blocker-arrow-resolved" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4"><path d="M 0 0 L 8 4 L 0 8 z" /></marker><marker id="blocker-arrow-dismissed" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4"><path d="M 0 0 L 8 4 L 0 8 z" /></marker></defs>
         {edges.map((edge) => <path className={focusedStepId ? edge.sourceId === focusedStepId || edge.targetId === focusedStepId ? "active" : "muted" : ""} d={edge.path} key={edge.id} markerEnd="url(#dependency-arrow)" />)}
+        {blockerEdges.map((edge) => <path className={`blocker-edge blocker-edge-${edge.status}`} d={edge.path} key={edge.id} markerEnd={`url(#blocker-arrow-${edge.status})`} />)}
       </svg>
+      {blockerNodes.map(({ blocker, x, y }) => (
+        <button className={`dependency-node dependency-blocker-node dependency-blocker-node-${blocker.status}`} key={blocker.blocker_id} onClick={() => onOpenBlocker(blocker)} style={{ left: x, top: y }} type="button">
+          <header><code>{blocker.repository_alias} #{blocker.number}</code><span><i />{blocker.status} blocker</span></header>
+          <strong>{blocker.title}</strong>
+          <footer>Blocks {blocker.blocked_step_ids.join(", ")}</footer>
+        </button>
+      ))}
       {nodes.map(({ step, x, y }) => (
         <button
           aria-label={`${step.step_id}: ${step.title}, ${step.computed_state.replace("_", " ")}`}
@@ -1522,6 +1629,25 @@ function dependencyLayers(steps: Step[]) {
   const layers: Step[][] = [];
   for (const step of steps) (layers[depth(step)] ||= []).push(step);
   return layers;
+}
+
+function groupBlockersByPlanLevel(blockers: Blocker[], layers: Step[][]) {
+  const levelByStep = new Map(
+    layers.flatMap((layer, level) => layer.map((step) => [step.step_id, level] as const)),
+  );
+  const grouped = new Map<number, Blocker[]>();
+  for (const blocker of blockers) {
+    const affectedLevels = blocker.blocked_step_ids
+      .map((stepId) => levelByStep.get(stepId))
+      .filter((level): level is number => level !== undefined);
+    // A blocker belongs immediately before the earliest plan level it can stop.
+    // Additional edges still show every later milestone affected by the same issue.
+    const level = affectedLevels.length ? Math.min(...affectedLevels) : 0;
+    const group = grouped.get(level) || [];
+    group.push(blocker);
+    grouped.set(level, group);
+  }
+  return grouped;
 }
 
 function stepAssignees(step: Step) {
@@ -1577,6 +1703,12 @@ function WorkCard({ step, onOpen }: { step: Step; onOpen: () => void }) {
         <span>{step.repository_alias}</span>
       </div>
       <strong>{step.title}</strong>
+      {step.blockers.some((blocker) => blocker.is_active) && (
+        <span className="work-card-blockers">
+          <Bug />
+          {step.blockers.filter((blocker) => blocker.is_active).length} active blocker{step.blockers.filter((blocker) => blocker.is_active).length === 1 ? "" : "s"}
+        </span>
+      )}
       <footer>
         <span className="work-card-artifact">
           {artifact ? (
@@ -1591,24 +1723,55 @@ function WorkCard({ step, onOpen }: { step: Step; onOpen: () => void }) {
   );
 }
 
-function WorkPage({ dashboard, onOpenStep }: { dashboard: Dashboard; onOpenStep: (step: Step) => void }) {
+function blockerQueueState(blocker: Blocker): StepState {
+  if (blocker.status === "dismissed") return "cancelled";
+  if (blocker.status === "resolved") return "completed";
+  if (blocker.artifacts.some((artifact) => artifact.kind === "pull_request" && artifact.state === "open")) return "in_review";
+  return "pending";
+}
+
+function WorkBlockerCard({ blocker, onOpen }: { blocker: Blocker; onOpen: () => void }) {
+  const pullRequest = blocker.artifacts.find((artifact) => artifact.kind === "pull_request" && artifact.state === "open");
+  return (
+    <button className={`work-card work-blocker-card work-blocker-card-${blocker.status}`} onClick={onOpen} type="button">
+      <div><code><Bug />{blocker.repository_alias} #{blocker.number}</code><span>GitHub blocker</span></div>
+      <strong>{blocker.title}</strong>
+      <span className="work-blocker-target">Blocks {blocker.blocked_step_ids.join(", ")}</span>
+      <footer>
+        <span className="work-card-artifact">
+          {pullRequest ? <><GitPullRequest />PR #{pullRequest.number} · {pullRequest.author_login}</> : <><CircleDot />Issue #{blocker.number} · {blocker.author_login}</>}
+        </span>
+        <AssigneeList accounts={blocker.assignees} />
+      </footer>
+    </button>
+  );
+}
+
+function WorkPage({ dashboard, onOpenBlocker, onOpenStep }: { dashboard: Dashboard; onOpenBlocker: (blocker: Blocker) => void; onOpenStep: (step: Step) => void }) {
   const [query, setQuery] = useState("");
-  const filtered = dashboard.steps.filter((step) => !query || `${step.step_id} ${step.title} ${step.repository_alias}`.toLowerCase().includes(query.toLowerCase()));
+  const filteredSteps = dashboard.steps.filter((step) => !query || `${step.step_id} ${step.title} ${step.repository_alias}`.toLowerCase().includes(query.toLowerCase()));
+  const filteredBlockers = dashboard.blockers.filter((blocker) => !query || `${blocker.github_full_name} ${blocker.number} ${blocker.title} ${blocker.blocked_step_ids.join(" ")}`.toLowerCase().includes(query.toLowerCase()));
+  const states: StepState[] = ["ready", "pending", "in_review", "blocked", "completed"];
+  if (filteredSteps.some((step) => step.computed_state === "cancelled") || filteredBlockers.some((blocker) => blockerQueueState(blocker) === "cancelled")) states.push("cancelled");
   return (
     <>
-      <PageHeader eyebrow="GitHub delivery" title="Work queue" description="Declared steps organized by their current actionable state." />
-      <section className="toolbar"><SearchInput value={query} onChange={setQuery} placeholder="Search work" /><span className="result-count">{filtered.length} steps</span></section>
-      <section className="kanban">
-        {["ready", "pending", "in_review", "blocked", "completed"].map((state) => {
-          const items = filtered.filter((step) => step.computed_state === state);
+      <PageHeader eyebrow="GitHub delivery" title="Work queue" description="Milestones and GitHub blockers organized together by their current delivery state." />
+      <section className="toolbar"><SearchInput value={query} onChange={setQuery} placeholder="Search work" /><span className="result-count">{filteredSteps.length + filteredBlockers.length} items</span></section>
+      <section className={`kanban kanban-${states.length}-columns`}>
+        {states.map((state) => {
+          const steps = filteredSteps.filter((step) => step.computed_state === state);
+          const blockers = filteredBlockers.filter((blocker) => blockerQueueState(blocker) === state);
           return (
             <div className="kanban-column" key={state}>
               <header>
-                <StatusBadge status={state as StepState} />
-                <span>{items.length}</span>
+                <StatusBadge status={state} />
+                <span>{steps.length + blockers.length}</span>
               </header>
               <div>
-                {items.map((step) => (
+                {blockers.map((blocker) => (
+                  <WorkBlockerCard blocker={blocker} key={blocker.blocker_id} onOpen={() => onOpenBlocker(blocker)} />
+                ))}
+                {steps.map((step) => (
                   <WorkCard
                     key={step.step_id}
                     step={step}
@@ -1837,13 +2000,14 @@ function ReconciliationPage({ dashboard, onOpenStep, onReconcile, progress, reco
           <span className={activePhase === "plan_applying" ? "active" : ""}><i />Compare plan</span>
           <span className={activePhase === "fetching" ? "active" : ""}><i />Fetch GitHub</span>
           <span className={activePhase === "caching" ? "active" : ""}><i />Save evidence</span>
+          <span className={activePhase === "dependencies" ? "active" : ""}><i />Resolve blockers</span>
           <span className={activePhase === "validating" ? "active" : ""}><i />Apply rules</span>
         </div>
         <div aria-hidden="true" className="reconcile-progress-track"><i /></div>
       </section>
     )}
     <div className={reconciling ? "reconcile-results is-refreshing" : "reconcile-results"}>
-      <section className="reconcile-summary"><div className={findings.length ? "reconcile-score warning" : "reconcile-score"}><ShieldCheck /><strong>{findings.length ? `${findings.length} findings` : "In sync"}</strong><span>{session?.authenticated ? "Latest GitHub evidence is cached locally." : "Connect GitHub to retrieve delivery evidence."}</span></div><div className="reconcile-rules"><span><i />Open issue → Pending</span><span><i />Open PR → In review</span><span><i />Merged PR → Completed</span><span><i />Closed unmerged PR → Cancelled</span></div></section>
+      <section className="reconcile-summary"><div className={findings.length ? "reconcile-score warning" : "reconcile-score"}><ShieldCheck /><strong>{findings.length ? `${findings.length} findings` : "In sync"}</strong><span>{session?.authenticated ? "Latest GitHub evidence is cached locally." : "Connect GitHub to retrieve delivery evidence."}</span></div><div className="reconcile-rules"><span><i />Open issue → Pending</span><span><i />Open PR → In review</span><span><i />Open blocker → Blocked</span><span><i />Merged PR → Completed</span><span><i />Closed unmerged PR → Cancelled</span></div></section>
       {findings.length ? <section className="finding-list">{findings.map((finding, index) => <article key={`${finding.step.step_id}-${index}`}><span className={`finding-icon ${finding.severity}`}><CircleAlert /></span><div><header><strong>{finding.kind}</strong><code>{finding.step.step_id}</code></header><p>{finding.message}</p><span>{finding.step.repository_alias} · {finding.step.title}</span></div><button className="button button-secondary button-small" disabled={reconciling} onClick={() => onOpenStep(finding.step)}>Review</button></article>)}</section> : <EmptyState icon={<ShieldCheck />} title="No reconciliation findings" description="GitHub evidence follows the current DPT plan and dependency rules." />}
     </div>
   </>;
@@ -1928,7 +2092,129 @@ function AddRepositoryModal({ projectId, session, onClose, onCreated }: { projec
   return <Modal title="Add a managed repository" description="Select from GitHub or enter a repository manually. Local clone setup follows." onClose={onClose} wide><form className="form-stack" onSubmit={submit}>{error && <ErrorBanner message={error} />}{session?.authenticated ? <div className="github-picker"><SearchInput value={query} onChange={setQuery} placeholder="Search your GitHub repositories" />{loading ? <Loading label="Loading repositories" /> : <div className="github-repo-list">{filtered.map((repo) => <button className={selected?.id === repo.id ? "selected" : ""} key={repo.id} onClick={() => setSelected(repo)} type="button"><img src={repo.owner_avatar_url} alt="" /><span><strong>{repo.full_name}</strong><small>{repo.private ? "Private" : "Public"} · {repo.default_branch}</small></span>{selected?.id === repo.id && <CheckCircle2 />}</button>)}</div>}</div> : <label><span>GitHub repository</span><input name="github_full_name" placeholder="stateforge-org/stateforge-agent" required /></label>}<div className="form-grid"><label><span>DPT alias</span><input name="alias" placeholder="agent" required /></label><label><span>Responsibility</span><input name="responsibility" placeholder="Agent runtime and integration" /></label></div><div className="modal-actions"><button className="button button-ghost" onClick={onClose} type="button">Cancel</button><button className="button button-primary" disabled={session?.authenticated && !selected}><Plus />Add repository</button></div></form></Modal>;
 }
 
-function StepDetail({ dashboard, session, step, onClose, onSelect }: { dashboard: Dashboard; session: Session | null; step: Step; onClose: () => void; onSelect: (step: Step) => void }) {
+function AddBlockerForm({
+  dashboard,
+  step,
+  onCreated,
+}: {
+  dashboard: Dashboard;
+  step: Step;
+  onCreated: () => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"existing" | "new">("existing");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    const data = new FormData(event.currentTarget);
+    const body = mode === "existing"
+      ? { issue_url: String(data.get("issue_url") || "") }
+      : {
+          repository_id: String(data.get("repository_id") || ""),
+          title: String(data.get("title") || ""),
+          body: String(data.get("body") || ""),
+        };
+    try {
+      await api<Blocker>(
+        `/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/blockers`,
+        { method: "POST", body: JSON.stringify(body) },
+      );
+      await onCreated();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The blocker could not be added");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="add-blocker-form" onSubmit={submit}>
+      <header className="blocker-composer-header">
+        <span className="blocker-composer-icon"><Bug /></span>
+        <div>
+          <strong>{mode === "new" ? "Create a GitHub bug" : "Link a GitHub issue"}</strong>
+          <p>
+            {mode === "new"
+              ? "Open a focused bug in a managed repository and block this milestone immediately."
+              : "Use an existing issue as the GitHub-owned blocker for this milestone."}
+          </p>
+        </div>
+        <div aria-label="Blocker source" className="segmented" role="group">
+          <button className={mode === "existing" ? "active" : ""} onClick={() => setMode("existing")} type="button">Existing issue</button>
+          <button className={mode === "new" ? "active" : ""} onClick={() => setMode("new")} type="button">Create bug</button>
+        </div>
+      </header>
+      <div className="blocker-composer-body">
+        {mode === "existing" ? (
+          <div className="blocker-existing-grid">
+            <label>
+              <span>GitHub Issue URL</span>
+              <div className="blocker-url-control">
+                <Github />
+                <input name="issue_url" placeholder="https://github.com/owner/repository/issues/11" required />
+              </div>
+              <small>The issue must belong to one of this project’s managed repositories.</small>
+            </label>
+            <aside>
+              <Link2 />
+              <div>
+                <strong>Native GitHub dependency</strong>
+                <p>DPT adds a blocked-by relationship. It does not copy the issue into the plan.</p>
+              </div>
+            </aside>
+          </div>
+        ) : (
+          <div className="blocker-form-grid">
+            <label className="blocker-repository-field">
+              <span>Repository</span>
+              <select defaultValue={step.repository_id} name="repository_id" required>
+                {dashboard.repositories.map((repository) => (
+                  <option key={repository.repository_id} value={repository.repository_id}>
+                    {repository.github_full_name}
+                  </option>
+                ))}
+              </select>
+              <small>Where the fix will be implemented and reviewed.</small>
+            </label>
+            <label className="blocker-title-field">
+              <span>Bug title</span>
+              <div className="blocker-title-control">
+                <code>[BUG][{dashboard.project.release.toUpperCase()}]</code>
+                <input name="title" placeholder="Describe the concrete defect" required />
+              </div>
+              <small>Keep it specific—the generated prefix makes the release and issue type visible.</small>
+            </label>
+            <label className="blocker-description-field">
+              <span>Description <small>Markdown supported</small></span>
+              <textarea
+                name="body"
+                placeholder={"## Problem\nWhat is broken, and where?\n\n## Expected behavior\nWhat should happen instead?\n\n## Acceptance evidence\nHow will reviewers know it is fixed?"}
+                rows={8}
+              />
+            </label>
+          </div>
+        )}
+        {error && <ErrorBanner message={error} />}
+      </div>
+      <footer className="blocker-composer-footer">
+        <div>
+          <strong><CircleAlert />Blocks {step.step_id} immediately</strong>
+          <span>Closing or unlinking the GitHub issue releases the milestone.</span>
+        </div>
+        <button className="button button-danger" disabled={saving}>
+          <Bug />
+          {saving ? "Saving blocker…" : mode === "existing" ? "Link blocker" : "Create bug and block milestone"}
+        </button>
+      </footer>
+    </form>
+  );
+}
+
+function StepDetail({ dashboard, session, step, onChanged, onClose, onOpenBlocker, onSelect }: { dashboard: Dashboard; session: Session | null; step: Step; onChanged: () => Promise<void>; onClose: () => void; onOpenBlocker: (blocker: Blocker) => void; onSelect: (step: Step) => void }) {
+  const [addingBlocker, setAddingBlocker] = useState(false);
   const [creatingIssue, setCreatingIssue] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
   const [history, setHistory] = useState<Step[]>([]);
@@ -2131,12 +2417,14 @@ function StepDetail({ dashboard, session, step, onClose, onSelect }: { dashboard
               ) : issue ? (
                 <button
                   className="button button-primary"
-                  disabled={!session?.authenticated || !step.dependencies_complete}
+                  disabled={!session?.authenticated || !step.dependencies_complete || !step.blockers_clear}
                   onClick={() => setPullRequestOpen((open) => !open)}
                   title={
-                    step.dependencies_complete
-                      ? undefined
-                      : "Complete this milestone's dependencies first"
+                    !step.dependencies_complete
+                      ? "Complete this milestone's dependencies first"
+                      : !step.blockers_clear
+                        ? "Resolve this milestone's GitHub blockers first"
+                        : undefined
                   }
                 >
                   <GitPullRequest />
@@ -2202,6 +2490,57 @@ function StepDetail({ dashboard, session, step, onClose, onSelect }: { dashboard
             </a>
           </div>
         </div>
+        <div className="detail-section blocker-section">
+          <div className="detail-section-heading">
+            <span>GitHub blockers</span>
+            <button
+              className="button button-secondary button-small"
+              disabled={!session?.authenticated || !issue}
+              onClick={() => setAddingBlocker((open) => !open)}
+              title={issue ? undefined : "Create the milestone Issue first"}
+              type="button"
+            >
+              <Link2 />
+              {addingBlocker ? "Cancel" : "Add blocker"}
+            </button>
+          </div>
+          {addingBlocker && (
+            <AddBlockerForm
+              dashboard={dashboard}
+              step={step}
+              onCreated={async () => {
+                setAddingBlocker(false);
+                await onChanged();
+              }}
+            />
+          )}
+          {step.blockers.length ? (
+            <div className="blocker-link-list">
+              {step.blockers.map((blocker) => (
+                <button
+                  className={`blocker-link-card blocker-${blocker.status}`}
+                  key={blocker.blocker_id}
+                  onClick={() => onOpenBlocker(blocker)}
+                  type="button"
+                >
+                  <span className="blocker-link-icon"><Bug /></span>
+                  <span>
+                    <small>{blocker.repository_alias} #{blocker.number}</small>
+                    <strong>{blocker.title}</strong>
+                  </span>
+                  <span className={`blocker-status blocker-status-${blocker.status}`}>
+                    {blocker.status}
+                  </span>
+                  <ChevronRight />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="muted-copy">
+              No GitHub issue currently blocks this milestone.
+            </p>
+          )}
+        </div>
         <div className="detail-section">
           <span>Dependencies</span>
           {dependencies.length ? (
@@ -2239,6 +2578,133 @@ function StepDetail({ dashboard, session, step, onClose, onSelect }: { dashboard
           ) : (
             <p className="muted-copy">No downstream step declared.</p>
           )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BlockerDetail({
+  blocker,
+  dashboard,
+  session,
+  onChanged,
+  onClose,
+  onOpenStep,
+}: {
+  blocker: Blocker;
+  dashboard: Dashboard;
+  session: Session | null;
+  onChanged: () => Promise<void>;
+  onClose: () => void;
+  onOpenStep: (step: Step) => void;
+}) {
+  const [closing, setClosing] = useState(false);
+  const [pullRequestOpen, setPullRequestOpen] = useState(false);
+  const [unlinking, setUnlinking] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const issue = blocker.artifacts.find(
+    (artifact) => artifact.artifact_id === blocker.blocker_id,
+  ) || blocker;
+  const activePullRequest = blocker.artifacts.find(
+    (artifact) => artifact.kind === "pull_request" && (artifact.state === "open" || artifact.is_merged),
+  );
+  const blockedSteps = blocker.blocked_step_ids
+    .map((stepId) => dashboard.steps.find((step) => step.step_id === stepId))
+    .filter((step): step is Step => Boolean(step));
+
+  function requestClose() {
+    if (closing) return;
+    setClosing(true);
+    window.setTimeout(onClose, 180);
+  }
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") requestClose();
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [closing, onClose]);
+
+  async function unlink(step: Step) {
+    setError(null);
+    setUnlinking(step.step_id);
+    try {
+      await api<void>(
+        `/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/blockers/${encodeURIComponent(blocker.blocker_id)}`,
+        { method: "DELETE" },
+      );
+      await onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The blocker could not be unlinked");
+    } finally {
+      setUnlinking(null);
+    }
+  }
+
+  return (
+    <div className={closing ? "step-dialog-backdrop popup-closing" : "step-dialog-backdrop"} onMouseDown={requestClose}>
+      <section aria-labelledby="blocker-dialog-title" aria-modal="true" className="step-dialog blocker-dialog" onMouseDown={(event) => event.stopPropagation()} role="dialog">
+        <header>
+          <div><span className="eyebrow"><Bug />GitHub blocker</span><code>{blocker.repository_alias} #{blocker.number}</code></div>
+          <button aria-label="Close blocker details" className="icon-button" onClick={requestClose}><X /></button>
+        </header>
+        <nav aria-label="Blocker source" className="step-path blocker-path">
+          <span>Source</span><Github /><span>{blocker.github_full_name}</span><ChevronRight /><strong>Issue #{blocker.number}</strong>
+        </nav>
+        <div className="step-dialog-title blocker-dialog-title">
+          <div className="step-dialog-title-row">
+            <div className="step-dialog-title-copy">
+              <div className="step-dialog-status-line"><span>GitHub issue dependency</span><span className={`blocker-status blocker-status-${blocker.status}`}>{blocker.status}</span></div>
+              <h2 id="blocker-dialog-title">{blocker.title}</h2>
+              <div className="step-dialog-assignees"><AssigneeList accounts={blocker.assignees} /></div>
+            </div>
+            <div className="step-dialog-github-actions">
+              <a className="button button-secondary" href={blocker.html_url} rel="noreferrer" target="_blank"><CircleDot />Open Issue<ExternalLink /></a>
+              {activePullRequest ? (
+                <a className="button button-primary blocker-primary-action" href={activePullRequest.html_url} rel="noreferrer" target="_blank"><GitPullRequest />Open PR<ExternalLink /></a>
+              ) : blocker.is_active ? (
+                <button className="button button-primary blocker-primary-action" disabled={!session?.authenticated} onClick={() => setPullRequestOpen((open) => !open)}><GitPullRequest />{pullRequestOpen ? "Cancel PR" : "Open PR"}</button>
+              ) : null}
+            </div>
+          </div>
+          {error && <p className="step-dialog-action-error">{error}</p>}
+        </div>
+        {pullRequestOpen && (
+          <div className="github-action-panel blocker-action-panel">
+            <PullRequestBuilder blocker={blocker} dashboard={dashboard} />
+          </div>
+        )}
+        <div className="detail-section detail-section-github blocker-github-delivery">
+          <span>GitHub delivery</span>
+          <div className="github-records">
+            {blocker.artifacts.map((artifact) => (
+              <GitHubRecord artifact={artifact} key={artifact.artifact_id} repository={blocker.github_full_name} />
+            ))}
+          </div>
+        </div>
+        <div className="detail-section">
+          <span>Suggested fix branch</span>
+          <div className="planned-branch">
+            <a className="branch-code blocker-branch" href={githubBranchUrl(blocker.github_full_name, blocker.suggested_branch)} rel="noreferrer" target="_blank"><GitBranch />{blocker.suggested_branch}<ExternalLink /></a>
+          </div>
+        </div>
+        <div className="detail-section blocker-links-section">
+          <span>Blocking milestones</span>
+          <div className="related-steps">
+            {blockedSteps.map((step) => (
+              <div className="blocked-milestone-row" key={step.step_id}>
+                <button onClick={() => onOpenStep(step)} type="button"><code>{step.step_id}</code><span>{step.title}</span><StatusBadge status={step.computed_state} /></button>
+                <button aria-label={`Unlink ${blocker.title} from ${step.step_id}`} className="unlink-blocker" disabled={unlinking === step.step_id || !session?.authenticated} onClick={() => unlink(step)} title="Remove the GitHub blocked-by relationship" type="button"><Unlink />{unlinking === step.step_id ? "Unlinking…" : "Unlink"}</button>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
     </div>
@@ -2592,10 +3058,16 @@ function GitHubTimeline({
   );
 }
 
-function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: Step }) {
+function PullRequestBuilder({ dashboard, step, blocker }: { dashboard: Dashboard; step?: Step; blocker?: Blocker }) {
+  const plannedBranch = blocker?.suggested_branch || step?.branch_name || "";
+  const targetKey = blocker?.blocker_id || step?.step_id || "";
+  const targetApi = blocker
+    ? `/api/projects/${dashboard.project.project_id}/blockers/${encodeURIComponent(blocker.blocker_id)}/github`
+    : `/api/projects/${dashboard.project.project_id}/steps/${step?.step_id}/github`;
+  const targetLabel = blocker ? "Blocker fix" : "Milestone";
   const [branches, setBranches] = useState<string[]>([]);
   const [baseBranch, setBaseBranch] = useState("");
-  const [headBranch, setHeadBranch] = useState(step.branch_name);
+  const [headBranch, setHeadBranch] = useState(plannedBranch);
   const [comparison, setComparison] = useState<{
     status: string;
     ahead_by: number;
@@ -2611,12 +3083,12 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const headBranchExists = branches.includes(headBranch);
-  const plannedBranchExists = branches.includes(step.branch_name);
+  const plannedBranchExists = branches.includes(plannedBranch);
   const branchOptions = headBranchExists ? branches : [headBranch, ...branches];
 
   useEffect(() => {
     api<{ branches: string[]; planned_branch: string; default_base: string }>(
-      `/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/github/branches`,
+      `${targetApi}/branches`,
     ).then((result) => {
       setBranches(result.branches);
       setBaseBranch(result.default_base);
@@ -2628,7 +3100,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
           : "GitHub branches could not be loaded",
       );
     }).finally(() => setLoading(false));
-  }, [dashboard.project.project_id, step.branch_name, step.step_id]);
+  }, [dashboard.project.project_id, plannedBranch, targetApi, targetKey]);
 
   useEffect(() => {
     if (
@@ -2657,7 +3129,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
       behind_by: number;
       total_commits: number;
     }>(
-      `/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/github/branch-comparison?${query}`,
+      `${targetApi}/branch-comparison?${query}`,
     ).then((result) => {
       if (!cancelled) setComparison(result);
     }).catch((caught: unknown) => {
@@ -2680,7 +3152,8 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
     headBranch,
     headBranchExists,
     comparisonRevision,
-    step.step_id,
+    targetApi,
+    targetKey,
   ]);
 
   async function createPlannedBranch() {
@@ -2689,7 +3162,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
     setCreatingBranch(true);
     try {
       const branch = await api<{ name: string; base_branch: string }>(
-        `/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/github/branches`,
+        `${targetApi}/branches`,
         {
           method: "POST",
           body: JSON.stringify({ base_branch: baseBranch }),
@@ -2719,7 +3192,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
     if (githubTab) githubTab.opener = null;
     try {
       const pullRequest = await api<{ number: number; html_url: string }>(
-        `/api/projects/${dashboard.project.project_id}/steps/${step.step_id}/github/pull-requests`,
+        `${targetApi}/pull-requests`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -2746,10 +3219,10 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
     <div className="pull-request-builder">
       <header>
         <div>
-          <strong>Milestone pull request</strong>
+          <strong>{targetLabel} pull request</strong>
           <p>
-            Review changes from the planned branch before merging them into the
-            project branch.
+            Review changes from the release-scoped branch before merging them into
+            the project branch.
           </p>
         </div>
         <Github />
@@ -2797,10 +3270,10 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
               </label>
             </div>
           </details>
-          {!plannedBranchExists && headBranch === step.branch_name && (
+          {!plannedBranchExists && headBranch === plannedBranch && (
             <div className="branch-create-callout">
               <div>
-                <strong>The planned branch does not exist on GitHub.</strong>
+                <strong>The suggested branch does not exist on GitHub.</strong>
                 <p>DPT will create it from <code>{baseBranch}</code>.</p>
               </div>
               <button
@@ -2809,7 +3282,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
                 onClick={createPlannedBranch}
               >
                 <GitBranch />
-                {creatingBranch ? "Creating branch…" : "Create planned branch"}
+                {creatingBranch ? "Creating branch…" : "Create suggested branch"}
               </button>
             </div>
           )}
@@ -2828,8 +3301,7 @@ function PullRequestBuilder({ dashboard, step }: { dashboard: Dashboard; step: S
                 <strong>No changes to open yet</strong>
                 <p>
                   <code>{headBranch}</code> currently has no commits beyond{" "}
-                  <code>{baseBranch}</code>. Implement the milestone and push a
-                  commit to the planned branch, then check again.
+                  <code>{baseBranch}</code>. {blocker ? "Implement the blocker fix" : "Implement the milestone"} and push a commit to the suggested branch, then check again.
                 </p>
               </div>
               <button

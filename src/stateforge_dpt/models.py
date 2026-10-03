@@ -95,6 +95,28 @@ class BranchCreate(BaseModel):
     base_branch: str = Field(min_length=1, max_length=240)
 
 
+class BlockerCreate(BaseModel):
+    """Create a GitHub bug or link an existing issue as a milestone blocker."""
+
+    issue_url: str | None = Field(default=None, max_length=500)
+    repository_id: str | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=240)
+    body: str = Field(default="", max_length=20_000)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> BlockerCreate:
+        """Require exactly one existing-issue or new-issue source."""
+        linking_existing = self.issue_url is not None
+        creating_new = self.repository_id is not None or self.title is not None
+        if linking_existing == creating_new:
+            raise ValueError(
+                "Provide either an existing GitHub Issue URL or a repository and title"
+            )
+        if creating_new and (self.repository_id is None or self.title is None):
+            raise ValueError("A repository and title are required for a new blocker")
+        return self
+
+
 class ProjectImportRequest(BaseModel):
     """Local Git clone containing a portable DPT project."""
 

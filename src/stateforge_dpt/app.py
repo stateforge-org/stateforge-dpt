@@ -8,6 +8,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import Cookie, FastAPI, HTTPException, Request, Response
@@ -20,6 +21,7 @@ from stateforge_dpt.git import GitError
 from stateforge_dpt.github import GitHubClient, GitHubError
 from stateforge_dpt.models import (
     AttachCloneRequest,
+    BlockerCreate,
     BranchCreate,
     CloneRepositoryRequest,
     GenerateRequest,
@@ -37,6 +39,25 @@ from stateforge_dpt.service import DPTError, DPTService
 
 SESSION_COOKIE = "stateforge_dpt_session"
 ReconciliationReporter = Callable[[dict[str, object]], Awaitable[None]]
+
+
+def _github_full_name_from_api_url(value: object) -> str | None:
+    """Extract owner/repository from a GitHub repository API URL."""
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"https://api\.github\.com/repos/([^/]+/[^/]+)", value)
+    return match.group(1) if match else None
+
+
+def _github_issue_url(value: str) -> tuple[str, int] | None:
+    """Parse a canonical GitHub issue URL."""
+    match = re.fullmatch(
+        r"https://github\.com/([^/]+/[^/]+)/issues/(\d+)/?",
+        value.strip(),
+    )
+    if not match:
+        return None
+    return match.group(1), int(match.group(2))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -152,6 +173,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repositories = service.repositories(project_id)
         total = 0
         repository_count = len(repositories)
+        artifact_batches: dict[str, list[dict[str, Any]]] = {}
+        repositories_by_name = {
+            str(repository["github_full_name"]).casefold(): repository
+            for repository in repositories
+        }
 
         for index, repository in enumerate(repositories, start=1):
             full_name = str(repository["github_full_name"])
@@ -176,6 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 full_name,
                 str(project["slug"]),
             )
+            artifact_batches[str(repository["repository_id"])] = artifacts
             if report:
                 await report(
                     {
@@ -192,12 +219,89 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "artifacts": total + len(artifacts),
                     }
                 )
+            total += len(artifacts)
+
+        dependency_records: list[dict[str, object]] = []
+        milestone_issues: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for repository in repositories:
+            for artifact in artifact_batches.get(
+                str(repository["repository_id"]), []
+            ):
+                labels = {
+                    str(label.get("name"))
+                    for label in artifact.get("labels", [])
+                    if isinstance(label, dict)
+                }
+                if "pull_request" not in artifact and any(
+                    label.startswith("dpt:step:") for label in labels
+                ):
+                    milestone_issues.append((repository, artifact))
+
+        if report:
+            await report(
+                {
+                    "phase": "dependencies",
+                    "title": "Resolving GitHub blockers",
+                    "detail": (
+                        f"Checking native blocked-by relationships for "
+                        f"{len(milestone_issues)} milestone issues. Blockers remain "
+                        "GitHub-owned and are not written into the portable plan."
+                    ),
+                    "repository": None,
+                    "repository_index": repository_count,
+                    "repository_count": repository_count,
+                    "artifacts": total,
+                }
+            )
+
+        for blocked_repository, milestone_issue in milestone_issues:
+            blocked_full_name = str(blocked_repository["github_full_name"])
+            blocking_issues = await github.issue_dependencies(
+                str(current["access_token"]),
+                blocked_full_name,
+                int(milestone_issue["number"]),
+            )
+            for blocking_issue in blocking_issues:
+                if "pull_request" in blocking_issue:
+                    continue
+                blocking_full_name = _github_full_name_from_api_url(
+                    blocking_issue.get("repository_url")
+                )
+                if blocking_full_name is None:
+                    continue
+                blocking_repository = repositories_by_name.get(
+                    blocking_full_name.casefold()
+                )
+                if blocking_repository is None:
+                    continue
+                blocking_repository_id = str(blocking_repository["repository_id"])
+                batch = artifact_batches[blocking_repository_id]
+                if not any(
+                    int(item["id"]) == int(blocking_issue["id"]) for item in batch
+                ):
+                    hydrated = await github.issue_artifact(
+                        str(current["access_token"]),
+                        blocking_full_name,
+                        int(blocking_issue["number"]),
+                    )
+                    batch.append(hydrated)
+                    total += 1
+                dependency_records.append(
+                    {
+                        "blocked_repository": blocked_full_name,
+                        "blocked_number": int(milestone_issue["number"]),
+                        "blocking_repository": blocking_full_name,
+                        "blocking_number": int(blocking_issue["number"]),
+                    }
+                )
+
+        for repository in repositories:
             service.record_github_artifacts(
                 project_id,
                 str(repository["repository_id"]),
-                artifacts,
+                artifact_batches.get(str(repository["repository_id"]), []),
             )
-            total += len(artifacts)
+        service.record_issue_dependencies(project_id, dependency_records)
 
         if report:
             await report(
@@ -205,8 +309,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "phase": "validating",
                     "title": "Rebuilding project state",
                     "detail": (
-                        "Applying the refreshed GitHub evidence to every milestone, "
-                        "checking dependency order, and recalculating findings."
+                        "Applying refreshed delivery evidence and GitHub blocker "
+                        "relationships to every milestone, checking dependency "
+                        "order, and recalculating findings."
                     ),
                     "repository": None,
                     "repository_index": repository_count,
@@ -549,6 +654,352 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "html_url": issue["html_url"],
         }
 
+    @app.post(
+        "/api/projects/{project_id}/steps/{step_id}/blockers",
+        status_code=201,
+    )
+    async def create_or_link_blocker(
+        project_id: str,
+        step_id: str,
+        request: BlockerCreate,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        current = await authenticated_session(session_token)
+        project = service.project(project_id)
+        step = service.step(project_id, step_id)
+        milestone_issue = next(
+            (
+                artifact
+                for artifact in step["artifacts"]
+                if artifact["kind"] == "issue"
+            ),
+            None,
+        )
+        if milestone_issue is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Create the milestone Issue before adding a GitHub blocker",
+            )
+        repositories = service.repositories(project_id)
+        repositories_by_name = {
+            str(repository["github_full_name"]).casefold(): repository
+            for repository in repositories
+        }
+
+        if request.issue_url:
+            parsed = _github_issue_url(request.issue_url)
+            if parsed is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Enter a GitHub Issue URL such as https://github.com/owner/repository/issues/12",
+                )
+            blocking_full_name, blocking_number = parsed
+            blocking_repository = repositories_by_name.get(
+                blocking_full_name.casefold()
+            )
+            if blocking_repository is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "A blocker must belong to a repository managed by this "
+                        "project"
+                    ),
+                )
+            try:
+                blocking_issue = await github.issue_artifact(
+                    str(current["access_token"]),
+                    blocking_full_name,
+                    blocking_number,
+                )
+            except GitHubError as error:
+                raise HTTPException(status_code=502, detail=str(error)) from error
+            if "pull_request" in blocking_issue:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A blocker must be a GitHub Issue, not a pull request",
+                )
+        else:
+            blocking_repository = next(
+                (
+                    repository
+                    for repository in repositories
+                    if repository["repository_id"] == request.repository_id
+                ),
+                None,
+            )
+            if blocking_repository is None or request.title is None:
+                raise HTTPException(status_code=404, detail="Repository not found")
+            blocking_full_name = str(blocking_repository["github_full_name"])
+            release = str(project["release"])
+            title = request.title.strip()
+            if not re.match(r"^\[bug]\[[^]]+]", title, flags=re.IGNORECASE):
+                title = re.sub(r"^\[bug]\s*", "", title, flags=re.IGNORECASE)
+                title = f"[BUG][{release.upper()}] {title}"
+            labels = [
+                f"dpt:project:{project['slug']}",
+                f"dpt:release:{release.casefold()}",
+                "bug",
+            ]
+            try:
+                created = await github.create_issue(
+                    str(current["access_token"]),
+                    blocking_full_name,
+                    title,
+                    request.body,
+                    labels,
+                )
+                blocking_issue = await github.issue_artifact(
+                    str(current["access_token"]),
+                    blocking_full_name,
+                    int(created["number"]),
+                )
+            except GitHubError as error:
+                raise HTTPException(status_code=502, detail=str(error)) from error
+
+        if (
+            blocking_full_name.casefold()
+            == str(step["github_full_name"]).casefold()
+            and int(blocking_issue["number"]) == int(milestone_issue["number"])
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="A milestone cannot block itself",
+            )
+        if any(
+            str(blocker["github_full_name"]).casefold()
+            == blocking_full_name.casefold()
+            and int(blocker["number"]) == int(blocking_issue["number"])
+            for blocker in step["blockers"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This GitHub Issue already blocks the milestone",
+            )
+
+        try:
+            await github.add_issue_dependency(
+                str(current["access_token"]),
+                str(step["github_full_name"]),
+                int(milestone_issue["number"]),
+                int(blocking_issue["id"]),
+            )
+        except GitHubError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+        blocker_artifact_id = service.upsert_github_artifact(
+            project_id,
+            str(blocking_repository["repository_id"]),
+            blocking_issue,
+        )
+        service.record_issue_dependency(
+            project_id,
+            {
+                "blocked_repository": step["github_full_name"],
+                "blocked_number": milestone_issue["number"],
+                "blocking_repository": blocking_full_name,
+                "blocking_number": blocking_issue["number"],
+            },
+        )
+        return service.blocker(project_id, blocker_artifact_id)
+
+    @app.delete(
+        "/api/projects/{project_id}/steps/{step_id}/blockers/{blocker_id}",
+        status_code=204,
+    )
+    async def unlink_blocker(
+        project_id: str,
+        step_id: str,
+        blocker_id: str,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> Response:
+        current = await authenticated_session(session_token)
+        step = service.step(project_id, step_id)
+        blocker = service.blocker(project_id, blocker_id)
+        if step_id not in blocker["blocked_step_ids"]:
+            raise HTTPException(status_code=404, detail="Blocker link not found")
+        milestone_issue = next(
+            artifact for artifact in step["artifacts"] if artifact["kind"] == "issue"
+        )
+        try:
+            await github.remove_issue_dependency(
+                str(current["access_token"]),
+                str(step["github_full_name"]),
+                int(milestone_issue["number"]),
+                int(blocker["github_issue_id"]),
+            )
+        except GitHubError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        service.remove_issue_dependency(
+            project_id,
+            str(milestone_issue["artifact_id"]),
+            blocker_id,
+        )
+        return Response(status_code=204)
+
+    @app.get("/api/projects/{project_id}/blockers/{blocker_id}/github/branches")
+    async def blocker_repository_branches(
+        project_id: str,
+        blocker_id: str,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        current = await authenticated_session(session_token)
+        project = service.project(project_id)
+        blocker = service.blocker(project_id, blocker_id)
+        repository = service.repository(str(blocker["repository_id"]))
+        try:
+            branches = await github.repository_branches(
+                str(current["access_token"]), str(blocker["github_full_name"])
+            )
+        except GitHubError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        source_branch = str(project["plan_source_branch"])
+        default_branch = repository.get("github_default_branch")
+        if source_branch in branches:
+            default_base = source_branch
+        elif isinstance(default_branch, str) and default_branch in branches:
+            default_base = default_branch
+        else:
+            default_base = branches[0] if branches else source_branch
+        return {
+            "branches": branches,
+            "planned_branch": blocker["suggested_branch"],
+            "default_base": default_base,
+        }
+
+    @app.get(
+        "/api/projects/{project_id}/blockers/{blocker_id}/github/branch-comparison"
+    )
+    async def compare_blocker_branches(
+        project_id: str,
+        blocker_id: str,
+        base_branch: str,
+        head_branch: str,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        current = await authenticated_session(session_token)
+        blocker = service.blocker(project_id, blocker_id)
+        if base_branch == head_branch:
+            raise HTTPException(
+                status_code=422,
+                detail="The base and compare branches must be different",
+            )
+        try:
+            return await github.compare_branches(
+                str(current["access_token"]),
+                str(blocker["github_full_name"]),
+                base_branch,
+                head_branch,
+            )
+        except GitHubError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @app.post(
+        "/api/projects/{project_id}/blockers/{blocker_id}/github/branches",
+        status_code=201,
+    )
+    async def create_blocker_branch(
+        project_id: str,
+        blocker_id: str,
+        request: BranchCreate,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        current = await authenticated_session(session_token)
+        blocker = service.blocker(project_id, blocker_id)
+        branch_name = str(blocker["suggested_branch"])
+        if request.base_branch == branch_name:
+            raise HTTPException(
+                status_code=422,
+                detail="The base and fix branches must be different",
+            )
+        try:
+            await github.create_branch(
+                str(current["access_token"]),
+                str(blocker["github_full_name"]),
+                request.base_branch,
+                branch_name,
+            )
+        except GitHubError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        return {"name": branch_name, "base_branch": request.base_branch}
+
+    @app.post(
+        "/api/projects/{project_id}/blockers/{blocker_id}/github/pull-requests",
+        status_code=201,
+    )
+    async def create_blocker_pull_request(
+        project_id: str,
+        blocker_id: str,
+        request: PullRequestCreate,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        current = await authenticated_session(session_token)
+        project = service.project(project_id)
+        blocker = service.blocker(project_id, blocker_id)
+        if not blocker["is_active"]:
+            raise HTTPException(status_code=409, detail="This blocker is resolved")
+        if request.base_branch == request.head_branch:
+            raise HTTPException(
+                status_code=422,
+                detail="The base and compare branches must be different",
+            )
+        if any(
+            artifact["kind"] == "pull_request"
+            and (artifact["state"] == "open" or artifact["is_merged"])
+            for artifact in blocker["artifacts"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "An active or merged pull request is already linked to this "
+                    "blocker"
+                ),
+            )
+        try:
+            comparison = await github.compare_branches(
+                str(current["access_token"]),
+                str(blocker["github_full_name"]),
+                request.base_branch,
+                request.head_branch,
+            )
+        except GitHubError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        if int(comparison["ahead_by"]) == 0:
+            raise HTTPException(
+                status_code=422,
+                detail="The fix branch has no commits ahead of the base branch",
+            )
+        blocked_steps = ", ".join(blocker["blocked_step_ids"])
+        body = "\n".join(
+            [
+                "## Blocker fix",
+                "",
+                f"Resolves a GitHub blocker affecting DPT milestones: {blocked_steps}.",
+                "",
+                f"Fixes {blocker['github_full_name']}#{blocker['number']}",
+            ]
+        )
+        labels = [
+            f"dpt:project:{project['slug']}",
+            f"dpt:release:{str(project['release']).casefold()}",
+            "bug",
+        ]
+        try:
+            pull_request = await github.create_pull_request(
+                str(current["access_token"]),
+                str(blocker["github_full_name"]),
+                str(blocker["title"]),
+                body,
+                request.base_branch,
+                request.head_branch,
+                labels,
+            )
+        except GitHubError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        return {
+            "number": pull_request["number"],
+            "html_url": pull_request["html_url"],
+        }
+
     @app.get("/api/projects/{project_id}/steps/{step_id}/github/branches")
     async def step_repository_branches(
         project_id: str,
@@ -627,6 +1078,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=409,
                 detail="Complete this step's dependencies before creating its branch",
             )
+        if not step["blockers_clear"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Resolve this step's GitHub blockers before creating its branch",
+            )
         branch_name = str(step["branch_name"])
         if request.base_branch == branch_name:
             raise HTTPException(
@@ -665,6 +1121,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=409,
                 detail=(
                     "Complete this step's dependencies before opening its pull request"
+                ),
+            )
+        if not step["blockers_clear"]:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Resolve this step's GitHub blockers before opening its pull "
+                    "request"
                 ),
             )
         if request.base_branch == request.head_branch:

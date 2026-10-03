@@ -176,6 +176,102 @@ def test_same_github_artifact_can_be_cached_in_two_local_projects(
     )
 
 
+def test_github_blocker_controls_milestone_readiness(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    database = Database(data_dir / "dpt.sqlite3")
+    database.initialize()
+    service = DPTService(database, SecretStore(data_dir))
+    project = service.create_project(
+        ProjectCreate(name="StateForge", slug="stateforge", release="MVP")
+    )
+    repository = service.add_repository(
+        project["project_id"],
+        RepositoryCreate(
+            alias="protocol",
+            github_full_name="stateforge-org/stateforge-protocol",
+        ),
+    )
+    service.create_step(
+        project["project_id"],
+        StepCreate(
+            step_id="P2",
+            repository_id=repository["repository_id"],
+            title="Define capability assessment",
+            required_result="Capability assessment is defined.",
+            branch_name="mvp/capability-assessment",
+        ),
+    )
+    milestone = {
+        "id": 105,
+        "number": 5,
+        "title": "Define capability assessment",
+        "state": "open",
+        "html_url": "https://github.com/stateforge-org/stateforge-protocol/issues/5",
+        "user": {"login": "octocat"},
+        "labels": [{"name": "dpt:step:P2"}],
+        "updated_at": "2026-10-03T10:00:00Z",
+    }
+    blocker = {
+        "id": 111,
+        "number": 11,
+        "title": "[BUG][MVP] Remove backup fields",
+        "state": "open",
+        "html_url": "https://github.com/stateforge-org/stateforge-protocol/issues/11",
+        "user": {"login": "octocat"},
+        "labels": [{"name": "bug"}],
+        "updated_at": "2026-10-03T10:00:00Z",
+    }
+    service.record_github_artifacts(
+        project["project_id"], repository["repository_id"], [milestone, blocker]
+    )
+    service.record_issue_dependencies(
+        project["project_id"],
+        [
+            {
+                "blocked_repository": "stateforge-org/stateforge-protocol",
+                "blocked_number": 5,
+                "blocking_repository": "stateforge-org/stateforge-protocol",
+                "blocking_number": 11,
+            }
+        ],
+    )
+
+    dashboard = service.dashboard(project["project_id"])
+    step = dashboard["steps"][0]
+    cached_blocker = dashboard["blockers"][0]
+
+    assert step["computed_state"] == "blocked"
+    assert step["blockers_clear"] is False
+    assert step["blockers"][0]["number"] == 11
+    assert cached_blocker["status"] == "active"
+    assert cached_blocker["suggested_branch"].startswith("mvp/fix-")
+    assert dashboard["metrics"]["active_blockers"] == 1
+    assert dashboard["metrics"]["blocked_milestones"] == 1
+
+    service.record_github_artifacts(
+        project["project_id"],
+        repository["repository_id"],
+        [milestone, {**blocker, "state": "closed", "state_reason": "completed"}],
+    )
+    service.record_issue_dependencies(
+        project["project_id"],
+        [
+            {
+                "blocked_repository": "stateforge-org/stateforge-protocol",
+                "blocked_number": 5,
+                "blocking_repository": "stateforge-org/stateforge-protocol",
+                "blocking_number": 11,
+            }
+        ],
+    )
+
+    resolved = service.dashboard(project["project_id"])
+    assert resolved["steps"][0]["computed_state"] == "pending"
+    assert resolved["steps"][0]["blockers_clear"] is True
+    assert resolved["blockers"][0]["status"] == "resolved"
+    assert resolved["metrics"]["active_blockers"] == 0
+
+
 def test_repository_artifacts_include_timeline_and_review_comments(
     monkeypatch,
     tmp_path: Path,
@@ -316,6 +412,58 @@ def test_repository_branches_returns_every_available_branch(
     )
 
     assert branches == ["mvp/implementation", "mvp/manifest"]
+
+
+def test_issue_dependencies_use_github_native_blocked_by_endpoints(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    github = GitHubClient(
+        Settings(
+            host="127.0.0.1",
+            port=8463,
+            data_dir=tmp_path,
+            frontend_dir=tmp_path,
+            github_client_id=DEFAULT_GITHUB_CLIENT_ID,
+        )
+    )
+    requests = []
+
+    async def request(_client, _token, method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        if method == "GET":
+            return [{"id": 111, "number": 11}]
+        return {"id": 111, "number": 11}
+
+    monkeypatch.setattr(github, "_request", request)
+
+    dependencies = asyncio.run(
+        github.issue_dependencies(
+            "access-token", "stateforge-org/stateforge-protocol", 5
+        )
+    )
+    added = asyncio.run(
+        github.add_issue_dependency(
+            "access-token", "stateforge-org/stateforge-protocol", 5, 111
+        )
+    )
+    asyncio.run(
+        github.remove_issue_dependency(
+            "access-token", "stateforge-org/stateforge-protocol", 5, 111
+        )
+    )
+
+    base_path = (
+        "/repos/stateforge-org/stateforge-protocol/issues/5/"
+        "dependencies/blocked_by"
+    )
+    assert dependencies == [{"id": 111, "number": 11}]
+    assert added["id"] == 111
+    assert requests == [
+        ("GET", base_path, {"params": {"per_page": 100, "page": 1}}),
+        ("POST", base_path, {"json": {"issue_id": 111}}),
+        ("DELETE", f"{base_path}/111", {}),
+    ]
 
 
 def test_branch_comparison_encodes_branch_names(

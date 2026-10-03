@@ -191,35 +191,119 @@ class GitHubClient:
                         "page": page,
                     },
                 )
-                for item in items:
-                    timeline = await self._paginated_items(
-                        client,
-                        access_token,
-                        f"/repos/{full_name}/issues/{item['number']}/timeline",
-                    )
-                    review_comments: list[dict[str, Any]] = []
-                    if "pull_request" in item:
-                        pull = await self._request(
-                            client,
-                            access_token,
-                            "GET",
-                            f"/repos/{full_name}/pulls/{item['number']}",
+                artifacts.extend(
+                    [
+                        await self._hydrate_issue(
+                            client, access_token, full_name, dict(item)
                         )
-                        review_comments = await self._paginated_items(
-                            client,
-                            access_token,
-                            f"/repos/{full_name}/pulls/{item['number']}/comments",
-                        )
-                        item = {**item, "pull_details": pull}
-                    item = {
-                        **item,
-                        "timeline": timeline,
-                        "review_comments": review_comments,
-                    }
-                    artifacts.append(item)
+                        for item in items
+                    ]
+                )
                 if len(items) < 100:
                     break
         return artifacts
+
+    async def issue_artifact(
+        self,
+        access_token: str,
+        full_name: str,
+        issue_number: int,
+    ) -> dict[str, Any]:
+        """Load one issue and the same conversation data used by reconciliation."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            issue = await self._request(
+                client,
+                access_token,
+                "GET",
+                f"/repos/{full_name}/issues/{issue_number}",
+            )
+            return await self._hydrate_issue(
+                client, access_token, full_name, dict(issue)
+            )
+
+    async def issue_dependencies(
+        self,
+        access_token: str,
+        full_name: str,
+        issue_number: int,
+    ) -> list[dict[str, Any]]:
+        """Return the native GitHub issues that block an issue."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            return await self._paginated_items(
+                client,
+                access_token,
+                f"/repos/{full_name}/issues/{issue_number}/dependencies/blocked_by",
+            )
+
+    async def add_issue_dependency(
+        self,
+        access_token: str,
+        full_name: str,
+        issue_number: int,
+        blocking_issue_id: int,
+    ) -> dict[str, Any]:
+        """Make an issue natively blocked by another GitHub issue."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            result = await self._request(
+                client,
+                access_token,
+                "POST",
+                f"/repos/{full_name}/issues/{issue_number}/dependencies/blocked_by",
+                json={"issue_id": blocking_issue_id},
+            )
+        return dict(result)
+
+    async def remove_issue_dependency(
+        self,
+        access_token: str,
+        full_name: str,
+        issue_number: int,
+        blocking_issue_id: int,
+    ) -> None:
+        """Remove one native blocked-by relationship from a GitHub issue."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            await self._request(
+                client,
+                access_token,
+                "DELETE",
+                (
+                    f"/repos/{full_name}/issues/{issue_number}/dependencies/"
+                    f"blocked_by/{blocking_issue_id}"
+                ),
+            )
+
+    async def _hydrate_issue(
+        self,
+        client: httpx.AsyncClient,
+        access_token: str,
+        full_name: str,
+        item: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach timeline, review, and pull-request details to an issue object."""
+        timeline = await self._paginated_items(
+            client,
+            access_token,
+            f"/repos/{full_name}/issues/{item['number']}/timeline",
+        )
+        review_comments: list[dict[str, Any]] = []
+        if "pull_request" in item:
+            pull = await self._request(
+                client,
+                access_token,
+                "GET",
+                f"/repos/{full_name}/pulls/{item['number']}",
+            )
+            review_comments = await self._paginated_items(
+                client,
+                access_token,
+                f"/repos/{full_name}/pulls/{item['number']}/comments",
+            )
+            item = {**item, "pull_details": pull}
+        return {
+            **item,
+            "timeline": timeline,
+            "review_comments": review_comments,
+        }
 
     async def _paginated_items(
         self,
@@ -376,12 +460,20 @@ class GitHubClient:
         full_name: str,
         labels: list[str],
     ) -> None:
-        """Create the three DPT labels when a repository lacks them."""
-        label_definitions = (
-            (labels[0], "2563eb", "StateForge DPT project tracking"),
-            (labels[1], "7c3aed", "StateForge DPT release tracking"),
-            (labels[2], "0e7490", "StateForge DPT implementation step"),
-        )
+        """Create requested DPT and bug labels when a repository lacks them."""
+        label_definitions: list[tuple[str, str, str]] = []
+        for label in labels:
+            if label.startswith("dpt:project:"):
+                definition = (label, "2563eb", "StateForge DPT project tracking")
+            elif label.startswith("dpt:release:"):
+                definition = (label, "7c3aed", "StateForge DPT release tracking")
+            elif label.startswith("dpt:step:"):
+                definition = (label, "0e7490", "StateForge DPT implementation step")
+            elif label.casefold() == "bug":
+                definition = (label, "d73a4a", "Something is not working")
+            else:
+                definition = (label, "64748b", "StateForge DPT GitHub tracking")
+            label_definitions.append(definition)
         existing_labels: set[str] = set()
         for page in range(1, 11):
             page_items = await self._request(
@@ -424,7 +516,7 @@ class GitHubClient:
             headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {access_token}",
-                "X-GitHub-Api-Version": "2022-11-28",
+                "X-GitHub-Api-Version": "2026-03-10",
             },
             **kwargs,
         )

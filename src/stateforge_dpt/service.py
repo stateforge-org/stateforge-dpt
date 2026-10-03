@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import uuid
@@ -176,6 +177,38 @@ def _github_timeline(
         timeline,
         key=lambda item: str(item.get("created_at") or ""),
     )
+
+
+def _pull_request_references_issue(
+    body: object,
+    repository: str,
+    issue_number: int,
+) -> bool:
+    """Return whether a pull-request body closes or references an issue."""
+    if not isinstance(body, str):
+        return False
+    escaped_repository = re.escape(repository)
+    reference = rf"(?:{escaped_repository})?#{issue_number}(?!\d)"
+    return bool(
+        re.search(
+            rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+{reference}",
+            body,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _blocker_branch(release: str, title: str, issue_number: int) -> str:
+    """Create a release-scoped, editable branch suggestion for a GitHub bug."""
+    cleaned = re.sub(r"\[[^]]+]", " ", title)
+    slug = re.sub(r"[^a-z0-9]+", "-", cleaned.casefold()).strip("-")
+    if slug.startswith("fix-"):
+        branch_name = slug
+    elif slug:
+        branch_name = f"fix-{slug}"
+    else:
+        branch_name = f"fix-issue-{issue_number}"
+    return f"{release.casefold()}/{branch_name[:80].rstrip('-')}"
 
 
 class DPTError(RuntimeError):
@@ -754,6 +787,13 @@ class DPTService:
                 return cast(dict[str, Any], step)
         raise DPTError("Step not found")
 
+    def blocker(self, project_id: str, blocker_id: str) -> dict[str, Any]:
+        """Return one reconciled GitHub blocker projection."""
+        for blocker in self.dashboard(project_id)["blockers"]:
+            if blocker["blocker_id"] == blocker_id:
+                return cast(dict[str, Any], blocker)
+        raise DPTError("Blocker not found")
+
     def dashboard(self, project_id: str) -> dict[str, Any]:
         """Return the complete project graph and observed delivery state."""
         project = self.project(project_id)
@@ -785,8 +825,19 @@ class DPTService:
             ).fetchall()
             artifact_rows = connection.execute(
                 """
-                SELECT * FROM github_artifacts
-                WHERE project_id = ? ORDER BY updated_at DESC
+                SELECT a.*, r.alias AS repository_alias,
+                    r.github_full_name AS github_full_name
+                FROM github_artifacts a
+                JOIN repositories r ON r.repository_id = a.repository_id
+                WHERE a.project_id = ? ORDER BY a.updated_at DESC
+                """,
+                (project_id,),
+            ).fetchall()
+            dependency_edge_rows = connection.execute(
+                """
+                SELECT blocked_artifact_id, blocking_artifact_id
+                FROM github_issue_dependency_edges
+                WHERE project_id = ?
                 """,
                 (project_id,),
             ).fetchall()
@@ -797,14 +848,76 @@ class DPTService:
                 row["depends_on_step_id"]
             )
         artifacts: dict[str, list[dict[str, Any]]] = {}
+        artifact_items: list[dict[str, Any]] = []
+        artifacts_by_id: dict[str, dict[str, Any]] = {}
         for row in artifact_rows:
             item = _row_dict(row)
             item["timeline"] = json.loads(item["timeline"])
             item["assignees"] = _github_accounts(json.loads(item["assignees"]))
             item["reviewers"] = _github_accounts(json.loads(item["reviewers"]))
             item["labels"] = json.loads(item["labels"])
+            artifact_items.append(item)
+            artifacts_by_id[item["artifact_id"]] = item
             if item["step_id"]:
                 artifacts.setdefault(item["step_id"], []).append(item)
+
+        blockers_by_id: dict[str, dict[str, Any]] = {}
+        blocker_ids_by_step: dict[str, list[str]] = {}
+        for edge in dependency_edge_rows:
+            blocked = artifacts_by_id.get(edge["blocked_artifact_id"])
+            blocking = artifacts_by_id.get(edge["blocking_artifact_id"])
+            if (
+                blocked is None
+                or blocking is None
+                or blocked["kind"] != "issue"
+                or blocking["kind"] != "issue"
+                or not blocked.get("step_id")
+            ):
+                continue
+            blocker_id = str(blocking["artifact_id"])
+            step_id = str(blocked["step_id"])
+            if blocker_id not in blockers_by_id:
+                state_reason = blocking.get("state_reason")
+                if blocking["state"] == "open":
+                    blocker_status = "active"
+                    active = True
+                elif state_reason == "not_planned":
+                    blocker_status = "dismissed"
+                    active = False
+                else:
+                    blocker_status = "resolved"
+                    active = False
+                related_pull_requests = [
+                    artifact
+                    for artifact in artifact_items
+                    if artifact["kind"] == "pull_request"
+                    and artifact["github_full_name"].casefold()
+                    == blocking["github_full_name"].casefold()
+                    and _pull_request_references_issue(
+                        artifact.get("body"),
+                        str(blocking["github_full_name"]),
+                        int(blocking["number"]),
+                    )
+                ]
+                blockers_by_id[blocker_id] = {
+                    **blocking,
+                    "blocker_id": blocker_id,
+                    "status": blocker_status,
+                    "is_active": active,
+                    "blocked_step_ids": [],
+                    "suggested_branch": _blocker_branch(
+                        str(project["release"]),
+                        str(blocking["title"]),
+                        int(blocking["number"]),
+                    ),
+                    "artifacts": [blocking, *related_pull_requests],
+                }
+            blocker = blockers_by_id[blocker_id]
+            if step_id not in blocker["blocked_step_ids"]:
+                blocker["blocked_step_ids"].append(step_id)
+            step_blocker_ids = blocker_ids_by_step.setdefault(step_id, [])
+            if blocker_id not in step_blocker_ids:
+                step_blocker_ids.append(blocker_id)
 
         result_steps: list[dict[str, Any]] = []
         completed = {
@@ -822,8 +935,16 @@ class DPTService:
                 dependency in completed for dependency in item["depends_on"]
             )
             item["dependencies_complete"] = dependencies_complete
+            item["blockers"] = [
+                blockers_by_id[blocker_id]
+                for blocker_id in blocker_ids_by_step.get(item["step_id"], [])
+            ]
+            blockers_clear = not any(
+                blocker["is_active"] for blocker in item["blockers"]
+            )
+            item["blockers_clear"] = blockers_clear
             item["computed_state"] = self._computed_state(
-                item["observed_state"], dependencies_complete
+                item["observed_state"], dependencies_complete, blockers_clear
             )
             result_steps.append(item)
 
@@ -846,14 +967,30 @@ class DPTService:
         }
         metrics["actionable"] = sum(
             step["dependencies_complete"]
+            and step["blockers_clear"]
             and step["computed_state"] in {"ready", "pending"}
             for step in result_steps
         )
         metrics["findings"] = len(findings)
+        metrics["active_blockers"] = sum(
+            blocker["is_active"] for blocker in blockers_by_id.values()
+        )
+        metrics["blocked_milestones"] = sum(
+            any(blocker["is_active"] for blocker in step["blockers"])
+            for step in result_steps
+        )
         return {
             "project": project,
             "repositories": repositories,
             "steps": result_steps,
+            "blockers": sorted(
+                blockers_by_id.values(),
+                key=lambda blocker: (
+                    not blocker["is_active"],
+                    blocker["github_full_name"],
+                    blocker["number"],
+                ),
+            ),
             "metrics": metrics,
             "findings": findings,
         }
@@ -1588,62 +1725,8 @@ class DPTService:
                 (repository_id,),
             )
             for item in artifacts:
-                labels = [label["name"] for label in item.get("labels", [])]
-                step_id = next(
-                    (
-                        label.removeprefix("dpt:step:")
-                        for label in labels
-                        if label.startswith("dpt:step:")
-                    ),
-                    None,
-                )
-                pull = item.get("pull_details")
-                kind = "pull_request" if pull else "issue"
-                connection.execute(
-                    """
-                    INSERT INTO github_artifacts(
-                        artifact_id, project_id, repository_id, step_id, kind,
-                        number, title, body, state, html_url, author_login,
-                        timeline, assignees, reviewers, labels, head_branch,
-                        base_branch, is_draft, is_merged, checks_state,
-                        updated_at
-                    ) VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                    )
-                    """,
-                    (
-                        f"{project_id}:{item['id']}",
-                        project_id,
-                        repository_id,
-                        step_id,
-                        kind,
-                        item["number"],
-                        item["title"],
-                        item.get("body"),
-                        item["state"],
-                        item["html_url"],
-                        item.get("user", {}).get("login"),
-                        json.dumps(
-                            _github_timeline(
-                                item.get("timeline", []),
-                                item.get("review_comments", []),
-                            )
-                        ),
-                        json.dumps(_github_accounts(item.get("assignees", []))),
-                        json.dumps(
-                            _github_accounts(
-                                (pull or {}).get("requested_reviewers", [])
-                            )
-                        ),
-                        json.dumps(labels),
-                        (pull or {}).get("head", {}).get("ref"),
-                        (pull or {}).get("base", {}).get("ref"),
-                        int(bool((pull or {}).get("draft"))),
-                        int(bool((pull or {}).get("merged_at"))),
-                        None,
-                        item.get("updated_at", timestamp),
-                    ),
+                self._write_github_artifact(
+                    connection, project_id, repository_id, item, timestamp
                 )
             self._activity(
                 connection,
@@ -1651,6 +1734,200 @@ class DPTService:
                 "github.reconciled",
                 f"Reconciled {len(artifacts)} GitHub artifacts",
                 {"repository_id": repository_id},
+            )
+
+    def upsert_github_artifact(
+        self,
+        project_id: str,
+        repository_id: str,
+        artifact: dict[str, Any],
+    ) -> str:
+        """Cache one freshly created or linked GitHub artifact immediately."""
+        with self.database.connect() as connection:
+            artifact_id = self._write_github_artifact(
+                connection, project_id, repository_id, artifact, utc_now()
+            )
+        return artifact_id
+
+    @staticmethod
+    def _write_github_artifact(
+        connection: sqlite3.Connection,
+        project_id: str,
+        repository_id: str,
+        item: dict[str, Any],
+        timestamp: str,
+    ) -> str:
+        """Normalize and persist one GitHub issue or pull request."""
+        labels = [
+            str(label["name"])
+            for label in item.get("labels", [])
+            if isinstance(label, dict) and label.get("name")
+        ]
+        step_id = next(
+            (
+                label.removeprefix("dpt:step:")
+                for label in labels
+                if label.startswith("dpt:step:")
+            ),
+            None,
+        )
+        pull = item.get("pull_details")
+        kind = "pull_request" if pull else "issue"
+        artifact_id = f"{project_id}:{item['id']}"
+        values = (
+            artifact_id,
+            project_id,
+            repository_id,
+            step_id,
+            kind,
+            item["number"],
+            item.get("id"),
+            item["title"],
+            item.get("body"),
+            item["state"],
+            item.get("state_reason"),
+            item["html_url"],
+            item.get("user", {}).get("login"),
+            json.dumps(
+                _github_timeline(
+                    item.get("timeline", []),
+                    item.get("review_comments", []),
+                )
+            ),
+            json.dumps(_github_accounts(item.get("assignees", []))),
+            json.dumps(
+                _github_accounts((pull or {}).get("requested_reviewers", []))
+            ),
+            json.dumps(labels),
+            (pull or {}).get("head", {}).get("ref"),
+            (pull or {}).get("base", {}).get("ref"),
+            int(bool((pull or {}).get("draft"))),
+            int(bool((pull or {}).get("merged_at"))),
+            None,
+            item.get("updated_at", timestamp),
+        )
+        connection.execute(
+            """
+            INSERT INTO github_artifacts(
+                artifact_id, project_id, repository_id, step_id, kind,
+                number, github_issue_id, title, body, state, state_reason,
+                html_url, author_login, timeline, assignees, reviewers,
+                labels, head_branch, base_branch, is_draft, is_merged,
+                checks_state, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT(artifact_id) DO UPDATE SET
+                repository_id = excluded.repository_id,
+                step_id = excluded.step_id,
+                kind = excluded.kind,
+                number = excluded.number,
+                github_issue_id = excluded.github_issue_id,
+                title = excluded.title,
+                body = excluded.body,
+                state = excluded.state,
+                state_reason = excluded.state_reason,
+                html_url = excluded.html_url,
+                author_login = excluded.author_login,
+                timeline = excluded.timeline,
+                assignees = excluded.assignees,
+                reviewers = excluded.reviewers,
+                labels = excluded.labels,
+                head_branch = excluded.head_branch,
+                base_branch = excluded.base_branch,
+                is_draft = excluded.is_draft,
+                is_merged = excluded.is_merged,
+                checks_state = excluded.checks_state,
+                updated_at = excluded.updated_at
+            """,
+            values,
+        )
+        return artifact_id
+
+    def record_issue_dependencies(
+        self,
+        project_id: str,
+        dependencies: list[dict[str, Any]],
+    ) -> None:
+        """Replace the local projection of GitHub blocked-by relationships."""
+        with self.database.connect() as connection:
+            connection.execute(
+                "DELETE FROM github_issue_dependency_edges WHERE project_id = ?",
+                (project_id,),
+            )
+            for dependency in dependencies:
+                self._insert_issue_dependency(connection, project_id, dependency)
+
+    def record_issue_dependency(
+        self,
+        project_id: str,
+        dependency: dict[str, Any],
+    ) -> None:
+        """Cache one dependency immediately after GitHub accepts it."""
+        with self.database.connect() as connection:
+            self._insert_issue_dependency(connection, project_id, dependency)
+
+    @staticmethod
+    def _insert_issue_dependency(
+        connection: sqlite3.Connection,
+        project_id: str,
+        dependency: dict[str, Any],
+    ) -> None:
+        blocked = connection.execute(
+            """
+            SELECT a.artifact_id
+            FROM github_artifacts a
+            JOIN repositories r ON r.repository_id = a.repository_id
+            WHERE a.project_id = ? AND a.kind = 'issue'
+              AND lower(r.github_full_name) = lower(?) AND a.number = ?
+            """,
+            (
+                project_id,
+                dependency["blocked_repository"],
+                dependency["blocked_number"],
+            ),
+        ).fetchone()
+        blocking = connection.execute(
+            """
+            SELECT a.artifact_id
+            FROM github_artifacts a
+            JOIN repositories r ON r.repository_id = a.repository_id
+            WHERE a.project_id = ? AND a.kind = 'issue'
+              AND lower(r.github_full_name) = lower(?) AND a.number = ?
+            """,
+            (
+                project_id,
+                dependency["blocking_repository"],
+                dependency["blocking_number"],
+            ),
+        ).fetchone()
+        if blocked is None or blocking is None:
+            return
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO github_issue_dependency_edges(
+                project_id, blocked_artifact_id, blocking_artifact_id, observed_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (project_id, blocked["artifact_id"], blocking["artifact_id"], utc_now()),
+        )
+
+    def remove_issue_dependency(
+        self,
+        project_id: str,
+        blocked_artifact_id: str,
+        blocking_artifact_id: str,
+    ) -> None:
+        """Remove one cached dependency after GitHub accepts its removal."""
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM github_issue_dependency_edges
+                WHERE project_id = ? AND blocked_artifact_id = ?
+                  AND blocking_artifact_id = ?
+                """,
+                (project_id, blocked_artifact_id, blocking_artifact_id),
             )
 
     def render_project(self, project_id: str, revision: int | None = None) -> str:
@@ -2202,7 +2479,12 @@ class DPTService:
     def _computed_state(
         observed: str | None,
         dependencies_complete: bool,
+        blockers_clear: bool = True,
     ) -> str:
+        if observed in {"completed", "cancelled"}:
+            return observed
+        if not blockers_clear:
+            return "blocked"
         if observed:
             return observed
         return "ready" if dependencies_complete else "blocked"
