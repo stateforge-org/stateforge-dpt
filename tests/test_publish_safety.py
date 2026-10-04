@@ -492,6 +492,9 @@ def test_git_publication_records_remote_revision_without_touching_active_checkou
 ) -> None:
     workspace.edit_title("[TASK][MVP] Publish through Git")
     before = workspace.plan_path.read_bytes()
+    previous_digest = workspace.app.state.service.repository(workspace.repository_id)[
+        "last_generated_digest"
+    ]
     calls: list[dict[str, object]] = []
 
     def publish_stub(
@@ -542,7 +545,73 @@ def test_git_publication_records_remote_revision_without_touching_active_checkou
     assert "Publish through Git" in str(calls[0]["content"])
     assert calls[0]["author_email"] == "123+maintainer@users.noreply.github.com"
     assert workspace.plan_path.read_bytes() == before
+    assert (
+        workspace.app.state.service.repository(workspace.repository_id)[
+            "last_generated_digest"
+        ]
+        == previous_digest
+    )
     status = workspace.app.state.service.project_plan_sources(workspace.project_id)
     assert status["sources"][0]["source_kind"] == "remote"
     assert status["sources"][0]["revision"] == 2
     assert status["sources"][0]["status"] == "current"
+
+
+def test_git_publication_preserves_uncommitted_dpt_generated_snapshot(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace.edit_title("[TASK][MVP] Generated local draft")
+    generated = workspace.publish()
+    assert generated.status_code == 200
+    assert generated.json()["revision"] == 2
+    local_content = workspace.plan_path.read_bytes()
+    local_digest = workspace.app.state.service.repository(workspace.repository_id)[
+        "last_generated_digest"
+    ]
+
+    def publish_stub(
+        _path_value: str,
+        _filename: str,
+        _content: str,
+        update_branch: str,
+        target_branch: str,
+        _commit_message: str,
+        _author_name: str,
+        _author_email: str,
+        _access_token: str | None,
+    ) -> dict[str, str | bool]:
+        return {
+            "update_branch": update_branch,
+            "target_branch": target_branch,
+            "update_branch_created": True,
+            "update_commit": "a" * 40,
+            "target_commit": "b" * 40,
+        }
+
+    monkeypatch.setattr("stateforge_dpt.service.publish_plan_branches", publish_stub)
+    workspace.edit_title("[TASK][MVP] Published Git draft")
+    published = workspace.app.state.service.publish_project_plan_to_git(
+        workspace.project_id,
+        "token",
+        123,
+        "maintainer",
+        "Maintainer",
+    )
+
+    assert published["revision"] == 3
+    assert workspace.plan_path.read_bytes() == local_content
+    assert (
+        workspace.app.state.service.repository(workspace.repository_id)[
+            "last_generated_digest"
+        ]
+        == local_digest
+    )
+
+    workspace.edit_title("[TASK][MVP] Next local draft")
+    next_publish = workspace.publish()
+
+    assert next_publish.status_code == 200
+    assert next_publish.json()["revision"] == 4
+    assert load_plan(str(workspace.plan_path)).plan.steps[0].title == (
+        "[TASK][MVP] Next local draft"
+    )

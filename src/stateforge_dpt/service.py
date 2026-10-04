@@ -3662,13 +3662,15 @@ class DPTService:
                 (revision, fingerprint, timestamp, project_id),
             )
             for repository, _ in targets:
-                connection.execute(
-                    """
-                    UPDATE repositories SET last_generated_digest = ?, updated_at = ?
-                    WHERE repository_id = ?
-                    """,
-                    (digest, timestamp, repository["repository_id"]),
-                )
+                if write_worktrees:
+                    connection.execute(
+                        """
+                        UPDATE repositories
+                        SET last_generated_digest = ?, updated_at = ?
+                        WHERE repository_id = ?
+                        """,
+                        (digest, timestamp, repository["repository_id"]),
+                    )
                 if remote_branch is not None:
                     connection.execute(
                         """
