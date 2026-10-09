@@ -4577,9 +4577,17 @@ class DPTService:
             return observed
         if not blockers_clear:
             return "blocked"
+        # A pull request represents work already in flight and remains visible as
+        # such even when reconciliation discovers an incomplete prerequisite.
+        # An issue alone does not override the plan: pending work becomes
+        # actionable only after every declared dependency is complete.
+        if observed == "in_review":
+            return observed
+        if not dependencies_complete:
+            return "blocked"
         if observed:
             return observed
-        return "ready" if dependencies_complete else "blocked"
+        return "ready"
 
     @staticmethod
     def _reconciliation_findings(

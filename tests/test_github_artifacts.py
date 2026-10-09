@@ -731,7 +731,7 @@ def test_github_evidence_derives_progress_and_unlocks_dependencies(
     assert dashboard["findings"] == []
 
 
-def test_pull_request_before_dependencies_is_a_reconciliation_finding(
+def test_github_evidence_respects_incomplete_dependencies(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
@@ -770,6 +770,33 @@ def test_pull_request_before_dependencies_is_a_reconciliation_finding(
             depends_on=["P1"],
         ),
     )
+    service.record_github_artifacts(
+        project["project_id"],
+        repository["repository_id"],
+        [
+            {
+                "id": 200,
+                "number": 3,
+                "title": "Implement manifest exchange",
+                "body": "Ready for implementation.",
+                "state": "open",
+                "html_url": "https://github.com/example/issues/3",
+                "user": {"login": "contributor"},
+                "labels": [{"name": "dpt:step:R1"}],
+                "updated_at": "2026-09-14T11:00:00Z",
+            }
+        ],
+    )
+
+    blocked_dashboard = service.dashboard(project["project_id"])
+    blocked_step = next(
+        step for step in blocked_dashboard["steps"] if step["step_id"] == "R1"
+    )
+
+    assert blocked_step["observed_state"] == "pending"
+    assert blocked_step["computed_state"] == "blocked"
+    assert blocked_step["dependencies_complete"] is False
+
     service.record_github_artifacts(
         project["project_id"],
         repository["repository_id"],
