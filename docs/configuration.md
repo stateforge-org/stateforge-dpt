@@ -62,6 +62,10 @@ STATEFORGE_DPT_WORKING_DIRECTORY=~/Development
 | `STATEFORGE_DPT_WORKING_DIRECTORY` | Parent workspace for clones | Resolved data directory |
 | `STATEFORGE_DPT_FRONTEND_DIR` | Override the browser interface build | Included package assets |
 | `STATEFORGE_DPT_GITHUB_CLIENT_ID` | Use a different GitHub App | Built-in StateForge DPT App |
+| `STATEFORGE_DPT_MCP_ENABLED` | Serve the local AI-agent interface | `true` |
+| `STATEFORGE_DPT_MCP_PATH` | Streamable HTTP MCP endpoint | `/mcp` |
+| `STATEFORGE_DPT_MCP_MAX_READ_BYTES` | Maximum UTF-8 bytes returned by one repository resource read | `128000` |
+| `STATEFORGE_DPT_MCP_ALLOW_REMOTE` | Explicitly permit MCP with a non-loopback bind; requires your own authenticated boundary | `false` |
 
 Environment variables override configuration-file values. Editable source
 installations also read the checkout's `.env` as a lower-priority fallback.
@@ -70,6 +74,27 @@ Explicit run flags override the corresponding resolved settings.
 Relative paths in a configuration file resolve beside that file. Relative paths
 provided by environment variables resolve under `~/.stateforge-dpt/`, not the
 directory from which DPT was started.
+
+## AI-agent interface
+
+On the default loopback bind, `stateforge-dpt run` serves MCP at
+`http://127.0.0.1:8463/mcp` from the same process and port as the browser. Pass
+`--no-mcp` when the agent interface is not wanted. If DPT is bound to a
+non-loopback address, MCP is disabled automatically unless
+`STATEFORGE_DPT_MCP_ALLOW_REMOTE=true` is explicitly configured. The remote
+override does not add authentication; place a real authenticated and encrypted
+boundary in front of DPT before enabling it.
+
+MCP plan application is a consequential write tool. Configure the client to
+ask for confirmation on every `apply_plan_change_proposal` call. A remembered
+or blanket auto-approval defeats the human-authority boundary. See
+[AI agent interface](ai-agent-interface.md) for the complete workflow.
+
+Codex desktop users can install the matching personal local plugin and approval
+policy with `stateforge-dpt setup-codex`. The command writes only the
+StateForge-owned plugin directory, updates the StateForge entry in the personal
+marketplace, and maintains a clearly marked block in `~/.codex/config.toml`.
+Existing unrelated marketplace entries and Codex settings are preserved.
 
 ## Connect GitHub
 

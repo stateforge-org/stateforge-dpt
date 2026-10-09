@@ -47,6 +47,12 @@ class Settings:
     frontend_dir: Path
     github_client_id: str
     working_directory: Path = field(default_factory=default_data_dir)
+    # Programmatic Settings instances opt in explicitly. load_settings() enables
+    # MCP for the normal local CLI runtime.
+    mcp_enabled: bool = False
+    mcp_path: str = "/mcp"
+    mcp_max_read_bytes: int = 128_000
+    mcp_allow_remote: bool = False
 
     @property
     def database_path(self) -> Path:
@@ -79,8 +85,24 @@ def load_settings(root: Path | None = None) -> Settings:
         selected = Path(configured).expanduser() if configured else default
         return (selected if selected.is_absolute() else base / selected).resolve()
 
+    def boolean(key: str, default: bool) -> bool:
+        configured = value(key, "true" if default else "false").strip().casefold()
+        if configured in {"1", "true", "yes", "on"}:
+            return True
+        if configured in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(f"{key} must be true or false")
+
     data_dir = directory("STATEFORGE_DPT_DATA_DIR", default_data_dir())
     frontend_dir = directory("STATEFORGE_DPT_FRONTEND_DIR", default_frontend_dir())
+
+    mcp_path = value("STATEFORGE_DPT_MCP_PATH", "/mcp").strip()
+    if not mcp_path.startswith("/") or mcp_path == "/":
+        raise ValueError("STATEFORGE_DPT_MCP_PATH must be a non-root absolute path")
+    mcp_path = mcp_path.rstrip("/")
+    mcp_max_read_bytes = int(value("STATEFORGE_DPT_MCP_MAX_READ_BYTES", "128000"))
+    if mcp_max_read_bytes <= 0:
+        raise ValueError("STATEFORGE_DPT_MCP_MAX_READ_BYTES must be positive")
 
     return Settings(
         host=value("STATEFORGE_DPT_HOST", "127.0.0.1"),
@@ -91,4 +113,8 @@ def load_settings(root: Path | None = None) -> Settings:
             "STATEFORGE_DPT_GITHUB_CLIENT_ID", DEFAULT_GITHUB_CLIENT_ID
         ),
         working_directory=directory("STATEFORGE_DPT_WORKING_DIRECTORY", data_dir),
+        mcp_enabled=boolean("STATEFORGE_DPT_MCP_ENABLED", True),
+        mcp_path=mcp_path,
+        mcp_max_read_bytes=mcp_max_read_bytes,
+        mcp_allow_remote=boolean("STATEFORGE_DPT_MCP_ALLOW_REMOTE", False),
     )

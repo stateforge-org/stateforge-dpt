@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stateforge-dpt"
-version = "0.1.5"
+version = "0.1.6"
 description = "Local development progress control for StateForge repositories."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,7 @@ dependencies = [
     "cryptography>=44.0",
     "fastapi>=0.115",
     "httpx>=0.28",
+    "mcp>=2.3,<3",
     "pydantic>=2.10",
     "python-dotenv>=1.0",
     "uvicorn>=0.34",

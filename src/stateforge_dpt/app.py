@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Cookie, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 
 from stateforge_dpt.config import Settings, load_settings
 from stateforge_dpt.database import Database
 from stateforge_dpt.git import GitError
 from stateforge_dpt.github import GitHubClient, GitHubError
+from stateforge_dpt.mcp_server import create_mcp_server
 from stateforge_dpt.models import (
     AttachCloneRequest,
     BlockerCreate,
@@ -37,6 +42,11 @@ from stateforge_dpt.models import (
     StepUpdate,
     VerificationRecordRequest,
     VerificationRunRequest,
+)
+from stateforge_dpt.proposals import (
+    PlanChangeProposalRequest,
+    PlanProposalService,
+    ProposalDecisionRequest,
 )
 from stateforge_dpt.security import SecretStore
 from stateforge_dpt.service import DPTError, DPTService
@@ -70,17 +80,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database = Database(resolved.database_path)
     database.initialize()
     service = DPTService(database, SecretStore(resolved.data_dir))
+    proposals = PlanProposalService(database, service)
     github = GitHubClient(resolved)
+
+    mcp_server = None
+    mcp_application = None
+    if resolved.mcp_enabled:
+        # Keep the intentionally quiet DPT terminal banner free of dependency
+        # lifecycle chatter; warnings and errors remain visible.
+        logging.getLogger("mcp.server.streamable_http_manager").setLevel(
+            logging.WARNING
+        )
+        mcp_server = create_mcp_server(
+            service,
+            proposals,
+            max_read_bytes=resolved.mcp_max_read_bytes,
+        )
+        loopback_hosts = {
+            f"127.0.0.1:{resolved.port}",
+            f"localhost:{resolved.port}",
+            f"[::1]:{resolved.port}",
+        }
+        allowed_hosts = sorted(loopback_hosts | {f"{resolved.host}:{resolved.port}"})
+        allowed_origins = sorted(
+            {
+                f"http://127.0.0.1:{resolved.port}",
+                f"http://localhost:{resolved.port}",
+                f"http://[::1]:{resolved.port}",
+                f"http://{resolved.host}:{resolved.port}",
+            }
+        )
+        mcp_application = mcp_server.streamable_http_app(
+            streamable_http_path=resolved.mcp_path,
+            json_response=True,
+            host=resolved.host,
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=allowed_hosts,
+                allowed_origins=allowed_origins,
+            ),
+        )
+
+    @asynccontextmanager
+    async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
+        if mcp_server is None:
+            yield
+            return
+        async with mcp_server.session_manager.run():
+            yield
 
     app = FastAPI(
         title="StateForge DPT",
-        version="0.1.5",
+        version="0.1.6",
         docs_url="/api/docs",
         redoc_url=None,
+        lifespan=lifespan,
     )
     app.state.settings = resolved
     app.state.service = service
     app.state.github = github
+    app.state.proposals = proposals
+    app.state.mcp_server = mcp_server
 
     async def authenticated_session(
         session_token: str | None,
@@ -123,6 +183,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         detail="GitHub authentication required",
                     )
         return current
+
+    def human_actor(session_token: str | None) -> str:
+        """Identify the local human without requiring GitHub authentication."""
+        current = service.session(session_token)
+        if current and current.get("github_login"):
+            return f"github:{current['github_login']}"
+        return "local-human"
+
+    def require_same_origin(request: Request) -> None:
+        """Reject browser decision requests submitted by another origin."""
+        origin = request.headers.get("origin")
+        if not origin:
+            return
+        parsed = urlsplit(origin)
+        if parsed.scheme not in {
+            "http",
+            "https",
+        } or parsed.netloc != request.headers.get("host"):
+            raise HTTPException(status_code=403, detail="Same-origin request required")
 
     async def reconcile_github_evidence(
         project_id: str,
@@ -361,14 +440,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse({"detail": str(error)}, status_code=409)
 
     @app.get("/api/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict[str, object]:
+        return {
+            "status": "ok",
+            "mcp": {
+                "enabled": resolved.mcp_enabled,
+                "path": resolved.mcp_path if resolved.mcp_enabled else None,
+            },
+        }
 
     @app.get("/api/config")
     async def public_config() -> dict[str, object]:
         return {
             "github_authentication": "device_flow",
             "generated_filename": "STATEFORGE_DPT.md",
+            "mcp": {
+                "enabled": resolved.mcp_enabled,
+                "path": resolved.mcp_path if resolved.mcp_enabled else None,
+            },
         }
 
     @app.get("/api/session")
@@ -1338,6 +1427,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             str(current["github_name"]) if current.get("github_name") else None,
         )
 
+    @app.get("/api/projects/{project_id}/plan-proposals")
+    async def plan_change_proposals(project_id: str) -> list[dict[str, Any]]:
+        """Return immutable AI plan proposals for optional browser review."""
+        return proposals.list(project_id)
+
+    @app.post("/api/projects/{project_id}/plan-proposals", status_code=201)
+    async def create_plan_change_proposal(
+        project_id: str,
+        proposal: PlanChangeProposalRequest,
+        request: Request,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, Any]:
+        require_same_origin(request)
+        if proposal.project_id != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Proposal project_id must match the route project",
+            )
+        return proposals.create(
+            proposal,
+            proposer_id=f"browser:{human_actor(session_token)}",
+        )
+
+    @app.get("/api/plan-proposals/{proposal_id}")
+    async def plan_change_proposal(proposal_id: str) -> dict[str, Any]:
+        return proposals.get(proposal_id)
+
+    @app.post("/api/plan-proposals/{proposal_id}/decision")
+    async def decide_plan_change_proposal(
+        proposal_id: str,
+        decision: ProposalDecisionRequest,
+        request: Request,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, Any]:
+        require_same_origin(request)
+        actor = human_actor(session_token)
+        if decision.decision == "apply":
+            return proposals.apply(
+                proposal_id,
+                decision,
+                decided_by=actor,
+                channel="browser",
+            )
+        return proposals.reject(
+            proposal_id,
+            decision,
+            decided_by=actor,
+            channel="browser",
+        )
+
     @app.post("/api/projects/{project_id}/reconcile")
     async def reconcile_project(
         project_id: str,
@@ -1394,6 +1533,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/projects/{project_id}/activity")
     async def project_activity(project_id: str) -> list[dict[str, object]]:
         return service.activities(project_id)
+
+    if mcp_application is not None:
+        # Reuse the shared FastAPI origin so the advertised MCP endpoint is
+        # exactly /mcp rather than a separately managed process or port.
+        app.router.routes.extend(mcp_application.routes)
 
     frontend = resolved.frontend_dir
     if (frontend / "index.html").is_file():

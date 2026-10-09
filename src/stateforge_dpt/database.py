@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS projects (
     generated_filename TEXT NOT NULL DEFAULT 'STATEFORGE_DPT.md',
     plan_source_branch TEXT,
     revision INTEGER NOT NULL DEFAULT 0,
+    working_plan_version INTEGER NOT NULL DEFAULT 0,
     plan_fingerprint TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -251,6 +252,47 @@ CREATE TABLE IF NOT EXISTS remote_plan_snapshots (
     fetched_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS plan_change_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    base_working_plan_version INTEGER NOT NULL,
+    base_plan_fingerprint TEXT NOT NULL,
+    proposal_version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    proposer_kind TEXT NOT NULL,
+    proposer_id TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    client_version TEXT,
+    idempotency_key TEXT NOT NULL,
+    supersedes_proposal_id TEXT REFERENCES plan_change_proposals(proposal_id)
+        ON DELETE SET NULL,
+    draft_plan_json TEXT NOT NULL,
+    draft_plan_fingerprint TEXT NOT NULL,
+    validation_json TEXT NOT NULL DEFAULT '{}',
+    diff_json TEXT NOT NULL DEFAULT '{}',
+    consequences_json TEXT NOT NULL DEFAULT '{}',
+    review_digest TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by TEXT,
+    decision_channel TEXT,
+    decision_reason TEXT,
+    applied_working_plan_version INTEGER,
+    UNIQUE(proposer_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS plan_change_proposal_operations (
+    proposal_id TEXT NOT NULL REFERENCES plan_change_proposals(proposal_id)
+        ON DELETE CASCADE,
+    operation_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    operation_kind TEXT NOT NULL,
+    proposed_payload_json TEXT NOT NULL,
+    PRIMARY KEY(proposal_id, operation_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_steps_repository
     ON steps(repository_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_artifacts_step
@@ -267,6 +309,8 @@ CREATE INDEX IF NOT EXISTS idx_verification_observation_step
     ON verification_observations(project_id, step_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_context_approvals_step
     ON context_approvals(project_id, step_id, approved_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plan_change_proposals_project
+    ON plan_change_proposals(project_id, status, created_at DESC);
 """
 
 
@@ -310,6 +354,11 @@ class Database:
                 connection.execute(
                     "ALTER TABLE projects ADD COLUMN plan_source_branch TEXT"
                 )
+            if "working_plan_version" not in project_columns:
+                connection.execute(
+                    "ALTER TABLE projects ADD COLUMN working_plan_version "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
             project_schema = connection.execute(
                 "SELECT sql FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'projects'"
@@ -330,13 +379,15 @@ class Database:
                         generated_filename TEXT NOT NULL DEFAULT 'STATEFORGE_DPT.md',
                         plan_source_branch TEXT,
                         revision INTEGER NOT NULL DEFAULT 0,
+                        working_plan_version INTEGER NOT NULL DEFAULT 0,
                         plan_fingerprint TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
                     INSERT INTO projects_without_slug_uniqueness
                     SELECT project_id, slug, name, release, generated_filename,
-                           plan_source_branch, revision, plan_fingerprint,
+                           plan_source_branch, revision, working_plan_version,
+                           plan_fingerprint,
                            created_at, updated_at
                     FROM projects;
                     DROP TABLE projects;

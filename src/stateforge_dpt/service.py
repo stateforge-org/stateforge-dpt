@@ -480,15 +480,16 @@ class DPTService:
             connection.execute(
                 """
                 UPDATE projects
-                SET plan_source_branch = ?, updated_at = ?
+                SET plan_source_branch = ?
                 WHERE project_id = ?
                 """,
-                (plan_source_branch, timestamp, project_id),
+                (plan_source_branch, project_id),
             )
             connection.execute(
                 "DELETE FROM remote_plan_snapshots WHERE project_id = ?",
                 (project_id,),
             )
+            self._touch_project(connection, project_id, timestamp)
             self._activity(
                 connection,
                 project_id,
@@ -532,6 +533,7 @@ class DPTService:
                 raise DPTError(
                     "Repository alias or GitHub repository already exists"
                 ) from error
+            self._touch_project(connection, project_id, timestamp)
             self._activity(
                 connection,
                 project_id,
@@ -1578,6 +1580,33 @@ class DPTService:
             "package_hash": package_hash,
             "package": package,
             "markdown": self._implementation_package_markdown(package, package_hash),
+        }
+
+    def latest_implementation_package(
+        self, project_id: str, step_id: str
+    ) -> dict[str, Any]:
+        """Return the latest recorded implementation package without creating one."""
+        self.step(project_id, step_id)
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM implementation_packages
+                WHERE project_id = ? AND step_id = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (project_id, step_id),
+            ).fetchone()
+        if row is None:
+            raise DPTError("No implementation package has been created for this step")
+        package = json.loads(row["package_json"])
+        return {
+            "package_id": row["package_id"],
+            "package_hash": row["package_hash"],
+            "created_at": row["created_at"],
+            "package": package,
+            "markdown": self._implementation_package_markdown(
+                package, str(row["package_hash"])
+            ),
         }
 
     def record_verification(
@@ -2888,6 +2917,8 @@ class DPTService:
         source_clone_path: str,
         source_full_name: str,
         source_file_is_worktree: bool = True,
+        preserve_github_artifacts: bool = False,
+        update_published_baseline: bool = True,
     ) -> None:
         """Atomically replace portable project data while preserving local clones."""
         plan = loaded.plan
@@ -2900,10 +2931,11 @@ class DPTService:
             str(row["github_full_name"]).casefold(): row for row in existing_rows
         }
 
-        connection.execute(
-            "DELETE FROM github_artifacts WHERE project_id = ?",
-            (project_id,),
-        )
+        if not preserve_github_artifacts:
+            connection.execute(
+                "DELETE FROM github_artifacts WHERE project_id = ?",
+                (project_id,),
+            )
         connection.execute(
             "DELETE FROM step_dependencies WHERE project_id = ?",
             (project_id,),
@@ -3093,26 +3125,48 @@ class DPTService:
                 ],
             )
         self._assert_acyclic(connection, project_id)
-        connection.execute(
-            """
-            UPDATE projects
-            SET name = ?, release = ?, generated_filename = ?,
-                plan_source_branch = ?, revision = ?, plan_fingerprint = ?,
-                updated_at = ?
-            WHERE project_id = ?
-            """,
-            (
-                plan.project.name,
-                plan.project.release,
-                plan.project.generated_filename,
-                plan.project.plan_source_branch
-                or f"{plan.project.release.lower()}/implementation",
-                plan.project.revision,
-                loaded.fingerprint,
-                timestamp,
-                project_id,
-            ),
-        )
+        if update_published_baseline:
+            connection.execute(
+                """
+                UPDATE projects
+                SET name = ?, release = ?, generated_filename = ?,
+                    plan_source_branch = ?, revision = ?, plan_fingerprint = ?,
+                    working_plan_version = working_plan_version + 1,
+                    updated_at = ?
+                WHERE project_id = ?
+                """,
+                (
+                    plan.project.name,
+                    plan.project.release,
+                    plan.project.generated_filename,
+                    plan.project.plan_source_branch
+                    or f"{plan.project.release.lower()}/implementation",
+                    plan.project.revision,
+                    loaded.fingerprint,
+                    timestamp,
+                    project_id,
+                ),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE projects
+                SET name = ?, release = ?, generated_filename = ?,
+                    plan_source_branch = ?,
+                    working_plan_version = working_plan_version + 1,
+                    updated_at = ?
+                WHERE project_id = ?
+                """,
+                (
+                    plan.project.name,
+                    plan.project.release,
+                    plan.project.generated_filename,
+                    plan.project.plan_source_branch
+                    or f"{plan.project.release.lower()}/implementation",
+                    timestamp,
+                    project_id,
+                ),
+            )
 
     def record_github_artifacts(
         self,
@@ -3656,7 +3710,9 @@ class DPTService:
             connection.execute(
                 """
                 UPDATE projects
-                SET revision = ?, plan_fingerprint = ?, updated_at = ?
+                SET revision = ?, plan_fingerprint = ?,
+                    working_plan_version = working_plan_version + 1,
+                    updated_at = ?
                 WHERE project_id = ?
                 """,
                 (revision, fingerprint, timestamp, project_id),
@@ -4624,10 +4680,18 @@ class DPTService:
             visit(step_id)
 
     @staticmethod
-    def _touch_project(connection: sqlite3.Connection, project_id: str) -> None:
+    def _touch_project(
+        connection: sqlite3.Connection,
+        project_id: str,
+        timestamp: str | None = None,
+    ) -> None:
         connection.execute(
-            "UPDATE projects SET updated_at = ? WHERE project_id = ?",
-            (utc_now(), project_id),
+            """
+            UPDATE projects
+            SET updated_at = ?, working_plan_version = working_plan_version + 1
+            WHERE project_id = ?
+            """,
+            (timestamp or utc_now(), project_id),
         )
 
     @staticmethod

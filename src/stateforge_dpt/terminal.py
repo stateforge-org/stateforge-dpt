@@ -20,6 +20,7 @@ def startup_banner(
     if ":" in browser_host:
         browser_host = f"[{browser_host}]"
     url = f"http://{browser_host}:{settings.port}"
+    mcp_url = f"{url}{settings.mcp_path}"
     mark, rule, arrow = ("◆", "─", "→") if unicode_symbols else ("*", "-", ">")
 
     return "\n".join(
@@ -32,6 +33,18 @@ def startup_banner(
             "",
             f"  {style('OPEN IN YOUR BROWSER', '1')}",
             f"  {style(arrow, '1;32')}  {style(url, '1;4;96')}",
+            *(
+                [
+                    "",
+                    f"  {style('AI TOOLS (MCP)', '1')}",
+                    f"  {style(arrow, '1;35')}  {style(mcp_url, '1;4;95')}",
+                    "  "
+                    f"{style('Codex app setup ', '2')}"
+                    f"{style('stateforge-dpt setup-codex', '1;95')}",
+                ]
+                if settings.mcp_enabled
+                else []
+            ),
             "",
             f"  Sign in with {style('Continue with GitHub', '1;95')}",
             f"  {style('or continue in local mode.', '2')}",

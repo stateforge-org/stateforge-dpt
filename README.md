@@ -33,6 +33,10 @@ provide the delivery evidence. Each computer keeps its own local working copy.
 - **Regression-resistant implementation.** Define cross-repository context,
   protected behavior, and verification before work begins; review the exact
   change surface and retain relevant bug history afterward.
+- **A first-class AI interface.** The same local process exposes DPT through
+  MCP, so coding agents can inspect roadmaps, blockers, repository context, and
+  implementation packages without scraping the browser. Agents may propose
+  plan edits, but an exact digest-bound proposal needs human confirmation.
 
 ## Installation
 
@@ -70,6 +74,51 @@ Use a virtual environment for an OS-managed Python. If you already use
 Joining an existing project? Choose **Import from repository** on the projects
 page and select a local clone containing a published `STATEFORGE_DPT.md`.
 DPT previews the complete plan before importing it.
+
+## Use DPT from an AI coding agent
+
+`stateforge-dpt run` also serves a local Streamable HTTP MCP endpoint:
+
+```text
+http://127.0.0.1:8463/mcp
+```
+
+For the Codex desktop app, install DPT's personal local plugin once:
+
+```sh
+stateforge-dpt setup-codex
+```
+
+Then keep DPT running, restart the Codex app, and start a new chat. The setup
+command preserves other personal marketplace entries, registers the loopback
+MCP endpoint, and configures proposal application and rejection to prompt for
+confirmation in Codex. Rerun it after changing DPT's configured port, or pass
+the matching endpoint with `--url`.
+
+Connect an MCP-capable coding client to that URL while DPT is running. The
+agent can read projects, dependency stages, the work queue, GitHub blockers,
+managed repository trees, approved context contracts, and implementation
+packages. File access is limited to Git-tracked text resources in attached
+repositories and bounded by a configurable read limit.
+
+Discovery tools intentionally return compact milestone and blocker cards.
+Agents call `get_work_item` only for the selected item's complete GitHub,
+context, and review evidence, keeping routine planning queries small.
+
+Plan editing uses a proposal boundary. The agent submits typed operations; DPT
+validates the complete resulting plan and returns an immutable review package
+with a semantic diff, consequences, version, and SHA-256 review digest. After
+you review it in the conversation, the agent may call the consequential apply
+tool. Keep per-call tool confirmation enabled in your MCP client—never
+auto-approve `apply_plan_change_proposal`. The same proposals can be inspected,
+applied, or rejected in **Plan editor → AI proposals**.
+
+Applying a proposal changes only the local SQLite working plan. It never writes
+`STATEFORGE_DPT.md`, publishes a revision, commits, pushes, opens a pull request,
+reviews, or merges. Those remain separate human-owned workflows. Run with
+`--no-mcp` to disable the agent interface. See the
+[AI agent interface guide](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/ai-agent-interface.md)
+for the complete tool and safety model.
 
 ## Share a plan across computers
 
@@ -133,6 +182,7 @@ and recovery through your normal development workflow.
 - [Configuration and troubleshooting](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/configuration.md)
 - [Architecture and plan format](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/architecture.md)
 - [AI regression-resistance workflow](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/ai-regression-resistance.md)
+- [AI agent interface](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/ai-agent-interface.md)
 - [Development and release guide](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/development.md)
 - [Issue tracker](https://github.com/stateforge-org/stateforge-dpt/issues)
 

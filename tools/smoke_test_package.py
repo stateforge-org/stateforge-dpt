@@ -37,7 +37,13 @@ def main() -> None:
         raise RuntimeError(
             "Smoke test requires an installed wheel, not an editable checkout"
         )
-    executable = shutil.which("stateforge-dpt")
+    executable_name = "stateforge-dpt.exe" if os.name == "nt" else "stateforge-dpt"
+    environment_executable = Path(sys.executable).parent / executable_name
+    executable = (
+        str(environment_executable)
+        if environment_executable.is_file()
+        else shutil.which("stateforge-dpt")
+    )
     if executable is None:
         raise RuntimeError("Installed stateforge-dpt console command is missing")
     with socket.socket() as listener:
@@ -60,6 +66,25 @@ def main() -> None:
             NO_COLOR="1",
             PYTHONIOENCODING="utf-8",
         )
+        base = f"http://127.0.0.1:{port}"
+        setup = subprocess.run(  # noqa: S603 - installed console command, no shell
+            [executable, "setup-codex", "--url", f"{base}/mcp"],
+            cwd=working_directory,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert "Restart the Codex app" in setup.stdout  # noqa: S101
+        plugin = json.loads(
+            (home / ".codex" / "plugins" / "stateforge-dpt" / "mcp.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin["mcpServers"]["stateforge-dpt"]["url"] == (  # noqa: S101
+            f"{base}/mcp"
+        )
         process = subprocess.Popen(  # noqa: S603 - installed console command, no shell
             [executable, "run", "--port", str(port)],
             cwd=working_directory,
@@ -70,12 +95,15 @@ def main() -> None:
             encoding="utf-8",
         )
         try:
-            base = f"http://127.0.0.1:{port}"
             deadline = time.monotonic() + 20
             while True:
                 try:
                     health = json.loads(read_url(f"{base}/api/health"))
-                    assert health == {"status": "ok"}  # noqa: S101 - smoke-test assertion
+                    assert health["status"] == "ok"  # noqa: S101 - smoke-test assertion
+                    assert health["mcp"] == {  # noqa: S101 - smoke-test assertion
+                        "enabled": True,
+                        "path": "/mcp",
+                    }
                     break
                 except (URLError, TimeoutError):
                     if process.poll() is not None or time.monotonic() > deadline:
@@ -101,10 +129,12 @@ def main() -> None:
                 output, _ = process.communicate(timeout=5)
             print_server_output(output)
         assert "Continue with GitHub" in output  # noqa: S101
+        assert f"http://127.0.0.1:{port}/mcp" in output  # noqa: S101
         assert "INFO:" not in output  # noqa: S101
+        assert "session manager" not in output.casefold()  # noqa: S101
         print(
-            "Installed package OK: console command, frontend, assets, API, "
-            "and home workspace."
+            "Installed package OK: console command, Codex plugin, frontend, "
+            "assets, API, and home workspace."
         )
 
 

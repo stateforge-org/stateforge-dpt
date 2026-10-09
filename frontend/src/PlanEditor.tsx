@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   ArrowRight,
+  Bot,
   Check,
   ChevronRight,
   CircleDot,
@@ -29,6 +30,7 @@ import type {
   ContextResource,
   Dashboard,
   PlanSource,
+  PlanChangeProposal,
   PlanSyncStatus,
   Repository,
   Step,
@@ -73,6 +75,12 @@ export function PlanEditorPage({
   const [syncError, setSyncError] = useState<string | null>(null);
   const [resolveOpen, setResolveOpen] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [proposals, setProposals] = useState<PlanChangeProposal[]>([]);
+  const [proposalOpen, setProposalOpen] = useState(false);
+  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
+  const [proposalLoading, setProposalLoading] = useState(false);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [decidingProposal, setDecidingProposal] = useState<"apply" | "reject" | null>(null);
 
   const loadSyncStatus = useCallback(async () => {
     setSyncLoading(true);
@@ -92,6 +100,58 @@ export function PlanEditorPage({
   useEffect(() => {
     void loadSyncStatus();
   }, [dashboard, loadSyncStatus]);
+
+  const loadProposals = useCallback(async () => {
+    setProposalLoading(true);
+    try {
+      const values = await api<PlanChangeProposal[]>(
+        `/api/projects/${dashboard.project.project_id}/plan-proposals`,
+      );
+      setProposals(values);
+      setSelectedProposalId((current) => {
+        if (current && values.some((proposal) => proposal.proposal_id === current)) return current;
+        return values.find((proposal) => proposal.status === "awaiting_review")?.proposal_id
+          ?? values[0]?.proposal_id
+          ?? null;
+      });
+      setProposalError(null);
+    } catch (caught) {
+      setProposalError(caught instanceof Error ? caught.message : "AI proposals could not be loaded");
+    } finally {
+      setProposalLoading(false);
+    }
+  }, [dashboard.project.project_id]);
+
+  useEffect(() => {
+    void loadProposals();
+  }, [loadProposals, dashboard.project.working_plan_version]);
+
+  async function decideProposal(decision: "apply" | "reject") {
+    const proposal = proposals.find((item) => item.proposal_id === selectedProposalId);
+    if (!proposal) return;
+    setDecidingProposal(decision);
+    setProposalError(null);
+    try {
+      await api<PlanChangeProposal>(`/api/plan-proposals/${proposal.proposal_id}/decision`, {
+        method: "POST",
+        body: JSON.stringify({
+          decision,
+          proposal_version: proposal.proposal_version,
+          review_digest: proposal.review_digest,
+          reason: decision === "apply"
+            ? "Confirmed in the DPT proposal inbox"
+            : "Rejected in the DPT proposal inbox",
+        }),
+      });
+      await onChanged();
+      await loadProposals();
+    } catch (caught) {
+      setProposalError(caught instanceof Error ? caught.message : "The proposal decision failed");
+      await loadProposals();
+    } finally {
+      setDecidingProposal(null);
+    }
+  }
 
   async function importPlan(repositoryId: string, force = false) {
     setSyncing(true);
@@ -186,6 +246,12 @@ export function PlanEditorPage({
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^[-.]+|[-.]+$/g, "") || "release";
   const updateBranch = `${releaseBranch}/update-dpt-plan`;
+  const pendingProposalCount = proposals.filter(
+    (proposal) => proposal.status === "awaiting_review",
+  ).length;
+  const selectedProposal = proposals.find(
+    (proposal) => proposal.proposal_id === selectedProposalId,
+  ) ?? null;
 
   return (
     <>
@@ -195,6 +261,17 @@ export function PlanEditorPage({
         description="Build the roadmap by choosing visible steps and connections. DPT handles IDs, ordering, and dependency validation."
         actions={(
           <>
+            <button
+              className="button button-secondary proposal-inbox-button"
+              onClick={() => {
+                setProposalOpen(true);
+                void loadProposals();
+              }}
+              type="button"
+            >
+              <Bot />AI proposals
+              {pendingProposalCount > 0 && <span>{pendingProposalCount}</span>}
+            </button>
             <button className="button button-secondary" onClick={() => showPreview()}>
               <FileCode2 />Preview output
             </button>
@@ -375,6 +452,107 @@ export function PlanEditorPage({
           sources={syncStatus.sources}
           syncing={syncing}
         />
+      )}
+
+      {proposalOpen && (
+        <Modal
+          description="Review agent-authored plan changes. Applying updates only this computer's SQLite working plan; publishing and Git remain separate."
+          extraWide
+          onClose={() => !decidingProposal && setProposalOpen(false)}
+          title="AI plan proposals"
+        >
+          {proposalError && <ErrorBanner message={proposalError} />}
+          {proposalLoading && proposals.length === 0 ? (
+            <div className="proposal-loading"><RefreshCw className="spin-icon" />Loading proposals…</div>
+          ) : proposals.length === 0 ? (
+            <EmptyState
+              icon={<Bot />}
+              title="No plan proposals"
+              description="An AI agent can inspect DPT through MCP and submit a validated proposal here."
+            />
+          ) : (
+            <div className="proposal-inbox">
+              <nav className="proposal-list" aria-label="AI plan proposals">
+                {proposals.map((proposal) => (
+                  <button
+                    className={proposal.proposal_id === selectedProposalId ? "active" : ""}
+                    key={proposal.proposal_id}
+                    onClick={() => setSelectedProposalId(proposal.proposal_id)}
+                    type="button"
+                  >
+                    <span className={`proposal-status is-${proposal.status}`}>
+                      {proposal.status.replaceAll("_", " ")}
+                    </span>
+                    <strong>{proposal.diff.summary.join(" · ")}</strong>
+                    <small>{proposal.client_name} · version {proposal.proposal_version}</small>
+                    <time>{new Date(proposal.created_at).toLocaleString()}</time>
+                  </button>
+                ))}
+              </nav>
+              {selectedProposal && (
+                <article className="proposal-review">
+                  <header>
+                    <div>
+                      <span className="eyebrow">Immutable review package</span>
+                      <h3>{selectedProposal.diff.summary.join(" · ")}</h3>
+                      <p>{selectedProposal.rationale}</p>
+                    </div>
+                    <span className={`proposal-status is-${selectedProposal.status}`}>
+                      {selectedProposal.status.replaceAll("_", " ")}
+                    </span>
+                  </header>
+                  <section className="proposal-review-facts">
+                    <div><span>Base working version</span><strong>{selectedProposal.base_working_plan_version}</strong></div>
+                    <div><span>Operations</span><strong>{selectedProposal.operations.length}</strong></div>
+                    <div><span>Affected milestones</span><strong>{selectedProposal.diff.affected_step_ids.length}</strong></div>
+                  </section>
+                  {selectedProposal.diff.affected_step_ids.length > 0 && (
+                    <div className="proposal-step-chips">
+                      {selectedProposal.diff.affected_step_ids.map((stepId) => <span key={stepId}>{stepId}</span>)}
+                    </div>
+                  )}
+                  <section className="proposal-operation-list">
+                    <h4>Exact proposed operations</h4>
+                    {selectedProposal.operations.map((operation, index) => (
+                      <details key={operation.operation_id} open={selectedProposal.operations.length <= 3}>
+                        <summary><span>{index + 1}</span>{operation.kind.replaceAll("_", " ")}</summary>
+                        <pre><code>{JSON.stringify(operation, null, 2)}</code></pre>
+                      </details>
+                    ))}
+                  </section>
+                  <section className="proposal-consequences">
+                    <ShieldCheck />
+                    <div>
+                      <strong>Application boundary</strong>
+                      <p>This updates the local working plan only. It does not write <code>{dashboard.project.generated_filename}</code>, publish a revision, commit, push, open a PR, or merge.</p>
+                      {selectedProposal.consequences.context_approvals_invalidated.length > 0 && (
+                        <small>Context approvals and implementation packages are invalidated for changed milestones.</small>
+                      )}
+                    </div>
+                  </section>
+                  <details className="proposal-digest">
+                    <summary>Review identity</summary>
+                    <dl>
+                      <dt>Proposal</dt><dd><code>{selectedProposal.proposal_id}</code></dd>
+                      <dt>Digest</dt><dd><code>{selectedProposal.review_digest}</code></dd>
+                      <dt>Draft fingerprint</dt><dd><code>{selectedProposal.draft_plan_fingerprint}</code></dd>
+                    </dl>
+                  </details>
+                  {selectedProposal.status === "awaiting_review" && (
+                    <footer>
+                      <button className="button button-ghost danger" disabled={Boolean(decidingProposal)} onClick={() => decideProposal("reject")} type="button">
+                        <Trash2 />{decidingProposal === "reject" ? "Rejecting…" : "Reject proposal"}
+                      </button>
+                      <button className="button button-primary" disabled={Boolean(decidingProposal)} onClick={() => decideProposal("apply")} type="button">
+                        <Check />{decidingProposal === "apply" ? "Applying…" : "Apply to local working plan"}
+                      </button>
+                    </footer>
+                  )}
+                </article>
+              )}
+            </div>
+          )}
+        </Modal>
       )}
     </>
   );

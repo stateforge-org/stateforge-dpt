@@ -1,6 +1,8 @@
 import io
+import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,10 @@ from fastapi.testclient import TestClient
 
 from stateforge_dpt import cli, config
 from stateforge_dpt.app import create_app
+from stateforge_dpt.codex_integration import (
+    CodexIntegrationError,
+    install_codex_integration,
+)
 from stateforge_dpt.terminal import print_startup_banner, startup_banner
 
 
@@ -211,6 +217,98 @@ def test_cli_missing_frontend_fails_with_build_instructions(
     assert error.value.code == 2
     assert "frontend build is missing" in capsys.readouterr().err
     assert not (home / ".stateforge-dpt").exists()
+
+
+def test_setup_codex_installs_personal_plugin_and_confirmation_policy(
+    runtime, monkeypatch, capsys
+):
+    home, _, _ = runtime
+    monkeypatch.setattr(sys, "argv", ["stateforge-dpt", "setup-codex"])
+
+    cli.main()
+
+    plugin_directory = home / ".codex" / "plugins" / "stateforge-dpt"
+    plugin = json.loads((plugin_directory / "plugin.json").read_text())
+    mcp = json.loads((plugin_directory / "mcp.json").read_text())
+    marketplace = json.loads(
+        (home / ".agents" / "plugins" / "marketplace.json").read_text()
+    )
+    codex_config = tomllib.loads((home / ".codex" / "config.toml").read_text())
+
+    assert plugin["name"] == "stateforge-dpt"
+    assert mcp["mcpServers"]["stateforge-dpt"] == {
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:8463/mcp",
+    }
+    assert marketplace["plugins"][0]["policy"]["installation"] == (
+        "INSTALLED_BY_DEFAULT"
+    )
+    plugin_config = codex_config["plugins"]["stateforge-dpt@stateforge-personal"]
+    server_config = plugin_config["mcp_servers"]["stateforge-dpt"]
+    assert server_config["default_tools_approval_mode"] == "approve"
+    assert server_config["tools"]["apply_plan_change_proposal"] == {
+        "approval_mode": "prompt"
+    }
+    assert server_config["tools"]["reject_plan_change_proposal"] == {
+        "approval_mode": "prompt"
+    }
+    output = capsys.readouterr().out
+    assert "Restart the Codex app" in output
+    assert "http://127.0.0.1:8463/mcp" in output
+
+
+def test_setup_codex_is_idempotent_and_preserves_personal_configuration(runtime):
+    home, _, _ = runtime
+    marketplace_path = home / ".agents" / "plugins" / "marketplace.json"
+    marketplace_path.parent.mkdir(parents=True)
+    marketplace_path.write_text(
+        json.dumps(
+            {
+                "name": "personal-tools",
+                "interface": {"displayName": "My tools"},
+                "plugins": [
+                    {
+                        "name": "existing-tool",
+                        "source": "./existing-tool",
+                        "policy": {
+                            "installation": "AVAILABLE",
+                            "authentication": "ON_INSTALL",
+                        },
+                        "category": "Productivity",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = home / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('model = "gpt-6.1-sol"\n', encoding="utf-8")
+
+    for _ in range(2):
+        result = install_codex_integration(
+            home=home,
+            mcp_url="http://127.0.0.1:9000/mcp",
+        )
+
+    marketplace = json.loads(marketplace_path.read_text())
+    names = [item["name"] for item in marketplace["plugins"]]
+    assert names == ["existing-tool", "stateforge-dpt"]
+    assert result.plugin_id == "stateforge-dpt@personal-tools"
+    config_text = config_path.read_text()
+    assert config_text.startswith('model = "gpt-6.1-sol"')
+    assert config_text.count("# >>> stateforge-dpt setup-codex >>>") == 1
+    assert tomllib.loads(config_text)["plugins"][result.plugin_id]["enabled"] is True
+
+
+def test_setup_codex_rejects_non_loopback_mcp_urls(runtime):
+    home, _, _ = runtime
+
+    with pytest.raises(CodexIntegrationError, match="loopback HTTP MCP URL"):
+        install_codex_integration(
+            home=home,
+            mcp_url="https://dpt.example/mcp",
+        )
 
 
 def test_startup_banner_has_color_and_readable_plain_text(runtime):

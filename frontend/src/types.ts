@@ -30,10 +30,62 @@ export type Project = {
   generated_filename: string;
   plan_source_branch: string;
   revision: number;
+  working_plan_version: number;
   plan_fingerprint?: string | null;
   repository_count?: number;
   step_count?: number;
   updated_at: string;
+};
+
+export type PlanChangeProposal = {
+  proposal_id: string;
+  project_id: string;
+  base_working_plan_version: number;
+  proposal_version: number;
+  status: "awaiting_review" | "applied" | "rejected" | "stale" | "superseded" | "cancelled" | "failed";
+  rationale: string;
+  proposer_kind: string;
+  proposer_id: string;
+  client_name: string;
+  client_version: string | null;
+  draft_plan_fingerprint: string;
+  review_digest: string;
+  created_at: string;
+  updated_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+  decision_channel: string | null;
+  decision_reason: string | null;
+  applied_working_plan_version: number | null;
+  operations: Array<{
+    operation_id: string;
+    kind: string;
+    [key: string]: unknown;
+  }>;
+  validation: { valid: boolean; schema_version: number };
+  diff: {
+    summary: string[];
+    affected_step_ids: string[];
+    project: Record<string, { before: unknown; after: unknown }>;
+    repositories: {
+      added: string[];
+      removed: string[];
+      changed: Array<Record<string, unknown>>;
+    };
+    steps: {
+      added: string[];
+      removed: string[];
+      changed: Array<Record<string, unknown>>;
+    };
+  };
+  consequences: {
+    affected_step_ids: string[];
+    context_approvals_invalidated: string[];
+    implementation_packages_invalidated: string[];
+    local_plan_becomes_unpublished: boolean;
+    publication_is_separate: boolean;
+  };
+  review_markdown: string;
 };
 
 export type CloneState = {

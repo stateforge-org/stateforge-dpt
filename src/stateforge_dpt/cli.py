@@ -8,6 +8,10 @@ from pathlib import Path
 
 import uvicorn
 
+from stateforge_dpt.codex_integration import (
+    CodexIntegrationError,
+    install_codex_integration,
+)
 from stateforge_dpt.config import load_settings
 from stateforge_dpt.database import Database
 from stateforge_dpt.security import SecretStore
@@ -30,6 +34,19 @@ def parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--working-directory", type=Path, help="workspace for repository clones"
+    )
+    run.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="disable the local MCP endpoint",
+    )
+    setup_codex = subcommands.add_parser(
+        "setup-codex",
+        help="install the local DPT tools in the Codex desktop app",
+    )
+    setup_codex.add_argument(
+        "--url",
+        help="override the loopback MCP URL registered with Codex",
     )
     init_db = subcommands.add_parser("init-db", help="initialize the SQLite database")
     init_db.add_argument(
@@ -56,8 +73,9 @@ def main() -> None:
     command_parser = parser()
     arguments = command_parser.parse_args()
     settings = load_settings()
-    if arguments.data_dir is not None:
-        data_dir = arguments.data_dir.expanduser().resolve()
+    data_dir_argument = getattr(arguments, "data_dir", None)
+    if data_dir_argument is not None:
+        data_dir = data_dir_argument.expanduser().resolve()
         settings = replace(
             settings,
             data_dir=data_dir,
@@ -80,6 +98,29 @@ def main() -> None:
         project_id = bootstrap_stateforge(service, arguments.root.resolve())
         print(f"Imported StateForge project {project_id}")
         return
+    if arguments.command == "setup-codex":
+        browser_host = (
+            "127.0.0.1"
+            if settings.host in {"0.0.0.0", "::", "localhost"}  # noqa: S104 - convert bind addresses into loopback client addresses
+            else settings.host
+        )
+        if ":" in browser_host:
+            browser_host = f"[{browser_host}]"
+        default_url = f"http://{browser_host}:{settings.port}{settings.mcp_path}"
+        try:
+            integration = install_codex_integration(
+                mcp_url=arguments.url or default_url,
+            )
+        except CodexIntegrationError as error:
+            command_parser.error(str(error))
+        print("StateForge DPT is configured for the Codex desktop app.")
+        print(f"Plugin:      {integration.plugin_directory}")
+        print(f"Marketplace: {integration.marketplace_path}")
+        print(f"MCP:         {integration.mcp_url}")
+        print()
+        print("Restart the Codex app and start a new chat after DPT is running.")
+        print("Plan application and proposal rejection require confirmation in Codex.")
+        return
     if not (settings.frontend_dir / "index.html").is_file():
         command_parser.error(
             f"The DPT frontend build is missing at {settings.frontend_dir}. "
@@ -96,7 +137,16 @@ def main() -> None:
             if arguments.working_directory is not None
             else settings.working_directory
         ),
+        mcp_enabled=settings.mcp_enabled and not arguments.no_mcp,
     )
+    if (
+        settings.mcp_enabled
+        and settings.host not in {"127.0.0.1", "localhost", "::1"}
+        and not settings.mcp_allow_remote
+    ):
+        # The web application may be intentionally exposed on a LAN. Do not
+        # expose the unauthenticated agent control surface with it by accident.
+        settings = replace(settings, mcp_enabled=False)
     from stateforge_dpt.app import create_app
 
     application = create_app(settings)

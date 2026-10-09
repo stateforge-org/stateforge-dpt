@@ -7,9 +7,11 @@ GitHub communication, Git operations, and controlled filesystem access. The
 browser interface communicates only with that local process.
 
 ```text
-Browser interface
-       |
-Local FastAPI backend
+Browser interface                 AI coding agents
+       |                                  |
+       +------------- REST / MCP ---------+
+                          |
+Local FastAPI backend (MCP is mounted at /mcp)
        +-- SQLite local working plan and audit cache
        +-- GitHub App authentication and API reconciliation
        +-- Git repository controller
@@ -17,6 +19,21 @@ Local FastAPI backend
        |
 Managed local repository clones <----> GitHub
 ```
+
+The browser, REST routes, and MCP tools share the same `DPTService` and SQLite
+database. MCP is not a sidecar and does not recreate domain rules. Its read
+tools expose authoritative project state and bounded Git-tracked resources.
+Its only plan mutation path creates immutable typed proposals. Applying the
+exact reviewed proposal replaces the local working plan atomically, preserves
+GitHub evidence, invalidates affected context approvals and implementation
+packages, and leaves the published revision and Git files unchanged.
+
+Every proposal is bound to a monotonic working-plan version, draft fingerprint,
+operation list, semantic diff, and review digest. Any intervening human or
+agent edit makes it stale. The apply tool requires the same proposal version
+and digest the human reviewed, and its MCP annotations mark it as a write so a
+supporting client can request per-call confirmation. Browser review is a
+fallback; opening a browser is not required for an agent-native approval.
 
 ## Sources of authority
 

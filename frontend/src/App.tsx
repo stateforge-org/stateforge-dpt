@@ -52,7 +52,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -62,6 +61,7 @@ import remarkGfm from "remark-gfm";
 import { api, apiStream } from "./api";
 import { Markdown } from "./Markdown";
 import { PlanEditorPage } from "./PlanEditor";
+import { ReleaseProgressMap } from "./ReleaseProgressMap";
 import type {
   Activity,
   Artifact,
@@ -110,16 +110,6 @@ const pageItems: Array<{ page: PageName; label: string; icon: ReactNode }> = [
   { page: "reconciliation", label: "Reconciliation", icon: <FileDiff /> },
   { page: "activity", label: "Activity", icon: <ActivityIcon /> },
   { page: "settings", label: "Settings", icon: <Settings /> },
-];
-
-const stateOrder: StepState[] = [
-  "ready",
-  "pending",
-  "in_review",
-  "blocked",
-  "completed",
-  "cancelled",
-  "planned",
 ];
 
 type ReconciliationPhase =
@@ -1444,7 +1434,7 @@ function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: {
         <MetricCard label="Reconciliation findings" value={String(dashboard.metrics.findings)} detail="Workflow rules requiring attention" tone="orange" icon={<FileDiff />} />
       </section>
       <section className="overview-grid">
-        <article className="panel progress-panel"><PanelTitle title="Release progress" meta={`Revision ${dashboard.project.revision}`} /><div className="progress-ring" style={{ "--progress": `${progress * 3.6}deg` } as CSSProperties}><div><strong>{progress}%</strong><span>complete</span></div></div><div className="progress-legend">{stateOrder.slice(0, 6).map((state) => <span key={state}><i className={`legend-${state}`} />{state.replace("_", " ")}<strong>{dashboard.metrics[state] || 0}</strong></span>)}</div></article>
+        <ReleaseProgressMap dashboard={dashboard} onOpenStep={onOpenStep} />
         <article className="panel"><PanelTitle title="Ready now" meta={`${ready.length} shown`} />{ready.length ? <div className="compact-list">{ready.map((step) => <StepRow key={step.step_id} step={step} onClick={() => onOpenStep(step)} />)}</div> : <EmptyMini title="No ready work" text="Complete an upstream dependency to unlock the next step." />}</article>
         <article className="panel"><PanelTitle title="Active reviews" meta={`${review.length} shown`} />{review.length ? <div className="compact-list">{review.map((step) => <StepRow key={step.step_id} step={step} onClick={() => onOpenStep(step)} />)}</div> : <EmptyMini title="No pull requests in review" text="GitHub reconciliation will place open PRs here." />}</article>
         <article className="panel repo-health"><PanelTitle title="Repository health" meta={`${dashboard.repositories.length} managed`} />{dashboard.repositories.length ? dashboard.repositories.map((repository) => <RepositoryHealth key={repository.repository_id} repository={repository} />) : <EmptyMini title="No repositories connected" text="Add the repositories that make up this project." action={<button className="button button-secondary button-small" onClick={onAddRepository}><Plus />Add repository</button>} />}</article>
