@@ -43,14 +43,21 @@ def _atomic_write(path: Path, content: str, *, mode: int = 0o600) -> None:
         suffix=".tmp",
     )
     temporary = Path(temporary_name)
+    descriptor_is_open = True
     try:
-        os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            fchmod(descriptor, mode)
+        stream = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
+        descriptor_is_open = False
+        with stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     except BaseException:
+        if descriptor_is_open:
+            os.close(descriptor)
         temporary.unlink(missing_ok=True)
         raise
 

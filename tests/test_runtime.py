@@ -301,6 +301,24 @@ def test_setup_codex_is_idempotent_and_preserves_personal_configuration(runtime)
     assert tomllib.loads(config_text)["plugins"][result.plugin_id]["enabled"] is True
 
 
+def test_setup_codex_closes_atomic_temp_files_without_posix_fchmod(
+    runtime, monkeypatch
+):
+    home, _, _ = runtime
+    monkeypatch.delattr(os, "fchmod", raising=False)
+
+    install_codex_integration(
+        home=home,
+        mcp_url="http://127.0.0.1:9000/mcp",
+    )
+
+    plugin_directory = home / ".codex" / "plugins" / "stateforge-dpt"
+    assert json.loads((plugin_directory / "plugin.json").read_text())["name"] == (
+        "stateforge-dpt"
+    )
+    assert list(plugin_directory.glob(".*.tmp")) == []
+
+
 def test_setup_codex_rejects_non_loopback_mcp_urls(runtime):
     home, _, _ = runtime
 
