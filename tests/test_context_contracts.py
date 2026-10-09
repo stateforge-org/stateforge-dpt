@@ -419,7 +419,19 @@ def test_verification_can_be_run_or_recorded_with_human_identity(
 def test_repository_removal_reports_context_references(tmp_path: Path) -> None:
     repository_path = git_repository(tmp_path)
     second_path = tmp_path / "consumer"
-    shutil.copytree(repository_path, second_path)
+    git = shutil.which("git")
+    assert git is not None
+    subprocess.run(  # noqa: S603 - fixed Git executable and test paths
+        [
+            git,
+            "clone",
+            "--quiet",
+            "--no-hardlinks",
+            str(repository_path),
+            str(second_path),
+        ],
+        check=True,
+    )
     with TestClient(create_app(settings(tmp_path))) as client:
         project, repository = create_milestone(client, repository_path)
         consumer = client.post(
