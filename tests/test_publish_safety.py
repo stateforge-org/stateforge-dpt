@@ -287,6 +287,49 @@ def test_publish_after_remote_import_accepts_the_updated_git_file(
     assert [step.step_id for step in plan.steps] == ["P0", "P1"]
 
 
+def test_publish_accepts_the_exact_baseline_after_a_repository_rename(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_content = workspace.plan_path.read_text(encoding="utf-8")
+    new_name = "stateforge-org/stateforge-protocol-python"
+    with workspace.app.state.service.database.connect() as connection:
+        connection.execute(
+            """
+            UPDATE repositories
+            SET github_full_name = ?, clone_url = ?
+            WHERE repository_id = ?
+            """,
+            (
+                new_name,
+                f"https://github.com/{new_name}.git",
+                workspace.repository_id,
+            ),
+        )
+    git(
+        workspace.clone,
+        "remote",
+        "set-url",
+        "origin",
+        f"https://github.com/{new_name}.git",
+    )
+    monkeypatch.setattr(
+        "stateforge_dpt.service.read_remote_file",
+        lambda *_args, **_kwargs: old_content,
+    )
+
+    refreshed = workspace.app.state.service.refresh_remote_plan_sources(
+        workspace.project_id, None
+    )
+    published = workspace.publish()
+
+    assert refreshed["status"] == "local_changes"
+    assert refreshed["errors"] == []
+    assert published.status_code == 200
+    assert published.json()["revision"] == 2
+    plan = load_plan(str(workspace.plan_path)).plan
+    assert plan.repositories[0].github_full_name == new_name
+
+
 @pytest.mark.parametrize("edit", ["unstaged", "staged", "staged_then_restored"])
 def test_publish_protects_manual_edits_to_an_older_snapshot(
     workspace: Workspace, edit: str

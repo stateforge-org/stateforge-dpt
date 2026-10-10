@@ -69,6 +69,26 @@ def _row_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}  # noqa: SIM118
 
 
+def _plan_includes_repository(
+    plan: PortablePlan,
+    repository: dict[str, Any],
+    *,
+    fingerprint: str,
+    published_fingerprint: str | None,
+) -> bool:
+    """Recognize an exact identity or its trusted pre-rename baseline."""
+    expected_name = str(repository["github_full_name"]).casefold()
+    if any(
+        item.github_full_name.casefold() == expected_name for item in plan.repositories
+    ):
+        return True
+    return bool(
+        published_fingerprint
+        and fingerprint == published_fingerprint
+        and any(item.alias == repository["alias"] for item in plan.repositories)
+    )
+
+
 def _github_accounts(values: Any) -> list[dict[str, str | None]]:
     """Normalize GitHub users stored by current and earlier DPT versions."""
     if not isinstance(values, list):
@@ -706,11 +726,12 @@ class DPTService:
                     f"This clone contains project "
                     f"{attached_plan.plan.project.slug}, not {project['slug']}"
                 )
-            repository_names = {
-                item.github_full_name.casefold()
-                for item in attached_plan.plan.repositories
-            }
-            if str(repository["github_full_name"]).casefold() not in repository_names:
+            if not _plan_includes_repository(
+                attached_plan.plan,
+                repository,
+                fingerprint=attached_plan.fingerprint,
+                published_fingerprint=project.get("plan_fingerprint"),
+            ):
                 raise DPTError(
                     "This repository is not listed in its embedded DPT manifest"
                 )
@@ -2521,12 +2542,11 @@ class DPTService:
                         f"{project['name']} ({project['slug']}). Import that plan "
                         "as an existing project instead."
                     )
-                repository_names = {
-                    item.github_full_name.casefold() for item in plan.repositories
-                }
-                if (
-                    str(repository["github_full_name"]).casefold()
-                    not in repository_names
+                if not _plan_includes_repository(
+                    plan,
+                    repository,
+                    fingerprint=fingerprint,
+                    published_fingerprint=project.get("plan_fingerprint"),
                 ):
                     raise PlanFileError(
                         "Remote plan does not list the repository that supplied it"
@@ -2668,8 +2688,12 @@ class DPTService:
                 f"({plan.project.slug}), not {project['name']} ({project['slug']}). "
                 "Import it as an existing project instead."
             )
-        source_names = {item.github_full_name.casefold() for item in plan.repositories}
-        if str(repository["github_full_name"]).casefold() not in source_names:
+        if not _plan_includes_repository(
+            plan,
+            repository,
+            fingerprint=loaded.fingerprint,
+            published_fingerprint=project.get("plan_fingerprint"),
+        ):
             raise DPTError("The selected repository is not part of its DPT manifest")
 
         working_fingerprint = plan_fingerprint(self.portable_plan(project_id))
@@ -3552,10 +3576,12 @@ class DPTService:
                 f"The DPT file at {location} belongs to a different project or "
                 "release. Review its plan before publishing."
             )
-        repository_names = {
-            item.github_full_name.casefold() for item in loaded.plan.repositories
-        }
-        if str(repository["github_full_name"]).casefold() not in repository_names:
+        if not _plan_includes_repository(
+            loaded.plan,
+            repository,
+            fingerprint=loaded.fingerprint,
+            published_fingerprint=project.get("plan_fingerprint"),
+        ):
             raise DPTError(
                 f"The DPT manifest at {location} does not include "
                 f"{repository['github_full_name']}. Review it before publishing."
