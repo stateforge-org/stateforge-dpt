@@ -2930,6 +2930,7 @@ class DPTService:
         existing_by_name = {
             str(row["github_full_name"]).casefold(): row for row in existing_rows
         }
+        existing_by_alias = {str(row["alias"]): row for row in existing_rows}
 
         if not preserve_github_artifacts:
             connection.execute(
@@ -2954,6 +2955,8 @@ class DPTService:
         retained_ids: set[str] = set()
         for repository in plan.repositories:
             existing = existing_by_name.get(repository.github_full_name.casefold())
+            if existing is None and preserve_github_artifacts:
+                existing = existing_by_alias.get(repository.alias)
             repository_id = (
                 str(existing["repository_id"]) if existing else str(uuid.uuid4())
             )
@@ -2972,10 +2975,19 @@ class DPTService:
                 if is_source and source_file_is_worktree
                 else (existing["last_generated_digest"] if existing else None)
             )
+            identity_changed = bool(
+                existing
+                and str(existing["github_full_name"]).casefold()
+                != repository.github_full_name.casefold()
+            )
             clone_url = (
-                existing["clone_url"]
-                if existing and existing["clone_url"]
-                else f"https://github.com/{repository.github_full_name}.git"
+                f"https://github.com/{repository.github_full_name}.git"
+                if identity_changed
+                else (
+                    existing["clone_url"]
+                    if existing and existing["clone_url"]
+                    else f"https://github.com/{repository.github_full_name}.git"
+                )
             )
             if existing:
                 connection.execute(

@@ -33,7 +33,7 @@ REPOSITORIES = (
     ),
     (
         "provider",
-        "stateforge-provider-implemntation",
+        "stateforge-provider-python",
         "Provider runtime and author-facing integration surface.",
     ),
     (

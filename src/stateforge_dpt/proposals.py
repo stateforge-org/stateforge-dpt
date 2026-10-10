@@ -92,6 +92,15 @@ class UpsertRepositoryOperation(BaseModel):
     repository: PortableRepository
 
 
+class RenameRepositoryOperation(BaseModel):
+    """Update one repository's GitHub identity without replacing its history."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["rename_repository"]
+    repository_alias: str
+    github_full_name: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
+
+
 class RemoveRepositoryOperation(BaseModel):
     """Remove an unreferenced repository declaration."""
 
@@ -125,6 +134,7 @@ PlanOperation = Annotated[
     | DeleteStepOperation
     | ReplaceStepContextOperation
     | UpsertRepositoryOperation
+    | RenameRepositoryOperation
     | RemoveRepositoryOperation
     | UpdateProjectOperation
     | ReorderStepsOperation,
@@ -260,6 +270,20 @@ def apply_plan_operations(
                 repositories.append(operation.repository)
             else:
                 repositories[index] = operation.repository
+        elif isinstance(operation, RenameRepositoryOperation):
+            index = next(
+                (
+                    i
+                    for i, repository in enumerate(repositories)
+                    if repository.alias == operation.repository_alias
+                ),
+                None,
+            )
+            if index is None:
+                raise DPTError(f"Repository not found: {operation.repository_alias}")
+            repositories[index] = repositories[index].model_copy(
+                update={"github_full_name": operation.github_full_name}
+            )
         elif isinstance(operation, RemoveRepositoryOperation):
             if not any(
                 repository.alias == operation.repository_alias

@@ -362,6 +362,82 @@ def test_explicit_reorder_is_the_only_operation_that_renumbers_steps(
         } == {"P0": 1, "P1": 0}
 
 
+def test_repository_rename_preserves_delivery_history_and_clone_attachment(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(settings(tmp_path))) as client:
+        project, repository = create_plan(client)
+        service = client.app.state.service
+        with service.database.connect() as connection:
+            connection.execute(
+                "UPDATE repositories SET local_path = ? WHERE repository_id = ?",
+                (str(tmp_path / "provider-clone"), repository["repository_id"]),
+            )
+        service.record_github_artifacts(
+            project["project_id"],
+            repository["repository_id"],
+            [
+                {
+                    "id": 18,
+                    "number": 18,
+                    "title": "Rename the Provider framework",
+                    "body": "Preserve this delivery record.",
+                    "state": "open",
+                    "html_url": "https://github.com/stateforge-org/old/issues/18",
+                    "user": {"login": "reviewer"},
+                    "labels": [{"name": "dpt:step:P0"}],
+                    "updated_at": "2026-10-10T10:00:00Z",
+                }
+            ],
+        )
+        dashboard = client.get(f"/api/projects/{project['project_id']}").json()
+
+        created = client.post(
+            f"/api/projects/{project['project_id']}/plan-proposals",
+            json={
+                "project_id": project["project_id"],
+                "base_working_plan_version": dashboard["project"][
+                    "working_plan_version"
+                ],
+                "rationale": "Record the upstream GitHub repository rename.",
+                "idempotency_key": "repository-rename-regression",
+                "client_name": "test-agent",
+                "operations": [
+                    {
+                        "kind": "rename_repository",
+                        "repository_alias": "protocol",
+                        "github_full_name": "stateforge-org/stateforge-provider-python",
+                    }
+                ],
+            },
+        )
+
+        assert created.status_code == 201
+        proposal = created.json()
+        applied = client.post(
+            f"/api/plan-proposals/{proposal['proposal_id']}/decision",
+            json={
+                "decision": "apply",
+                "proposal_version": proposal["proposal_version"],
+                "review_digest": proposal["review_digest"],
+                "reason": "The repository rename was verified.",
+            },
+        )
+        assert applied.status_code == 200
+
+        after = client.get(f"/api/projects/{project['project_id']}").json()
+        renamed = after["repositories"][0]
+        assert renamed["repository_id"] == repository["repository_id"]
+        assert renamed["github_full_name"] == (
+            "stateforge-org/stateforge-provider-python"
+        )
+        assert renamed["clone_url"] == (
+            "https://github.com/stateforge-org/stateforge-provider-python.git"
+        )
+        assert renamed["local_path"] == str(tmp_path / "provider-clone")
+        assert after["steps"][0]["artifacts"][0]["number"] == 18
+
+
 def test_mcp_is_served_on_the_same_runtime_at_exact_path(tmp_path: Path) -> None:
     app = create_app(settings(tmp_path, mcp_enabled=True))
     tools = asyncio.run(app.state.mcp_server.list_tools())
