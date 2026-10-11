@@ -334,6 +334,61 @@ def test_repository_artifacts_include_timeline_and_review_comments(
     ]
 
 
+def test_latest_successful_workflow_run_is_scoped_to_branch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    github = GitHubClient(
+        Settings(
+            host="127.0.0.1",
+            port=8463,
+            data_dir=tmp_path,
+            frontend_dir=tmp_path,
+            github_client_id=DEFAULT_GITHUB_CLIENT_ID,
+        )
+    )
+    captured: dict[str, object] = {}
+
+    async def request(_client, _token, method, path, **kwargs):
+        captured.update({"method": method, "path": path, **kwargs})
+        return {
+            "workflow_runs": [
+                {
+                    "id": 91,
+                    "name": "Provider CI",
+                    "run_number": 17,
+                    "conclusion": "success",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(github, "_request", request)
+
+    run = asyncio.run(
+        github.latest_successful_workflow_run(
+            "access-token",
+            "stateforge-org/stateforge-provider-python",
+            "mvp/implementation",
+        )
+    )
+
+    assert run == {
+        "id": 91,
+        "name": "Provider CI",
+        "run_number": 17,
+        "conclusion": "success",
+    }
+    assert captured == {
+        "method": "GET",
+        "path": "/repos/stateforge-org/stateforge-provider-python/actions/runs",
+        "params": {
+            "branch": "mvp/implementation",
+            "status": "success",
+            "per_page": 1,
+        },
+    }
+
+
 def test_issue_creation_adds_every_missing_dpt_label(
     monkeypatch,
     tmp_path: Path,

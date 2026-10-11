@@ -116,6 +116,13 @@ not a reason to keep retrying unchanged credentials. A PR also needs distinct
 base and compare branches with commits to propose; creating a branch alone does
 not create a meaningful code difference.
 
+The project dashboard loads the latest successful GitHub Actions run for every
+managed repository on the configured plan source branch. A custom GitHub App
+therefore needs read access to **Actions** in addition to the repository access
+used by reconciliation. Missing permission is isolated to that repository and
+appears as unavailable CI status; it does not prevent the rest of the dashboard
+from loading.
+
 ## Shared plans and delivery labels
 
 Set the project's **plan source branch** in **Settings**. Reconciliation fetches

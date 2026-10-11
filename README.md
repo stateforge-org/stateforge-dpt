@@ -25,7 +25,8 @@ provide the delivery evidence. Each computer keeps its own local working copy.
   completed work, with assigned contributors and their profile photos.
 - **GitHub context in one place.** Read formatted descriptions, comments,
   reviews, and activity. Open issues, create planned branches and PRs, or jump
-  to GitHub to start a review.
+  to GitHub to start a review. The dashboard also shows each repository's
+  latest successful GitHub Actions run on the plan source branch.
 - **Git-backed collaboration.** Share the complete plan in
   `STATEFORGE_DPT.md` and import it on another computer from a participating clone.
 - **Safe synchronization.** Refresh the shared plan without switching branches.

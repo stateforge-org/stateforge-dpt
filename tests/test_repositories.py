@@ -4,9 +4,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from stateforge_dpt.app import create_app
+from stateforge_dpt.app import SESSION_COOKIE, create_app
 from stateforge_dpt.config import DEFAULT_GITHUB_CLIENT_ID, Settings
 from stateforge_dpt.git import read_remote_file
+from stateforge_dpt.github import GitHubClient
 
 
 def run_git(git: str, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -56,6 +57,66 @@ def test_repository_can_be_removed_without_deleting_project(tmp_path: Path) -> N
         assert dashboard["repositories"] == []
         activity = client.get(f"/api/projects/{project['project_id']}/activity").json()
         assert activity[0]["kind"] == "repository.removed"
+
+
+def test_dashboard_fetches_latest_ci_success_for_managed_repositories(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def latest_successful_workflow_run(
+        _client: GitHubClient,
+        _access_token: str,
+        full_name: str,
+        branch: str,
+    ) -> dict[str, object]:
+        calls.append((full_name, branch))
+        return {
+            "name": "Provider CI",
+            "run_number": 42,
+            "run_attempt": 2,
+            "event": "push",
+            "head_sha": "abc123def456",
+            "html_url": "https://github.com/stateforge-org/sandbox/actions/runs/42",
+            "updated_at": "2026-10-11T09:15:00Z",
+        }
+
+    monkeypatch.setattr(
+        GitHubClient,
+        "latest_successful_workflow_run",
+        latest_successful_workflow_run,
+    )
+
+    with TestClient(create_app(settings(tmp_path))) as client:
+        project, _repository = create_project_and_repository(client)
+        token = client.app.state.service.create_session(
+            42,
+            "octocat",
+            "The Octocat",
+            None,
+            "access-token",
+            None,
+            None,
+            None,
+        )
+        client.cookies.set(SESSION_COOKIE, token)
+
+        response = client.get(f"/api/projects/{project['project_id']}")
+
+    assert response.status_code == 200
+    assert calls == [("stateforge-org/sandbox", "mvp/implementation")]
+    assert response.json()["repositories"][0]["ci_cd"] == {
+        "branch": "mvp/implementation",
+        "state": "success",
+        "workflow_name": "Provider CI",
+        "run_number": 42,
+        "run_attempt": 2,
+        "event": "push",
+        "head_sha": "abc123def456",
+        "html_url": "https://github.com/stateforge-org/sandbox/actions/runs/42",
+        "completed_at": "2026-10-11T09:15:00Z",
+    }
 
 
 def test_project_can_be_removed_without_touching_its_local_clone(

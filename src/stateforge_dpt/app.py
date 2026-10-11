@@ -131,7 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="StateForge DPT",
-        version="0.1.9",
+        version="0.1.10",
         docs_url="/api/docs",
         redoc_url=None,
         lifespan=lifespan,
@@ -202,6 +202,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "https",
         } or parsed.netloc != request.headers.get("host"):
             raise HTTPException(status_code=403, detail="Same-origin request required")
+
+    async def attach_repository_ci_status(
+        dashboard: dict[str, Any],
+        current: dict[str, object] | None,
+    ) -> None:
+        """Attach live GitHub Actions health without persisting telemetry."""
+        project = dashboard["project"]
+        branch = str(project.get("plan_source_branch") or "mvp/implementation")
+        repositories = dashboard["repositories"]
+
+        async def status(repository: dict[str, Any]) -> dict[str, object]:
+            base: dict[str, object] = {"branch": branch}
+            if current is None:
+                return {**base, "state": "authentication_required"}
+            try:
+                run = await github.latest_successful_workflow_run(
+                    str(current["access_token"]),
+                    str(repository["github_full_name"]),
+                    branch,
+                )
+            except (GitHubError, httpx.HTTPError) as error:
+                return {
+                    **base,
+                    "state": "unavailable",
+                    "message": str(error),
+                }
+            if run is None:
+                return {**base, "state": "not_found"}
+            return {
+                **base,
+                "state": "success",
+                "workflow_name": str(run.get("name") or "GitHub Actions"),
+                "run_number": int(run.get("run_number") or 0),
+                "run_attempt": int(run.get("run_attempt") or 1),
+                "event": str(run.get("event") or ""),
+                "head_sha": str(run.get("head_sha") or ""),
+                "html_url": str(run.get("html_url") or ""),
+                "completed_at": str(
+                    run.get("updated_at")
+                    or run.get("run_started_at")
+                    or run.get("created_at")
+                    or ""
+                ),
+            }
+
+        statuses = await asyncio.gather(
+            *(status(repository) for repository in repositories)
+        )
+        for repository, ci_status in zip(repositories, statuses, strict=True):
+            repository["ci_cd"] = ci_status
 
     async def reconcile_github_evidence(
         project_id: str,
@@ -609,8 +659,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return service.inspect_project_import(request.local_path)
 
     @app.get("/api/projects/{project_id}")
-    async def project_dashboard(project_id: str) -> dict[str, object]:
-        return service.dashboard(project_id)
+    async def project_dashboard(
+        project_id: str,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        dashboard = service.dashboard(project_id)
+        current: dict[str, object] | None = None
+        if session_token:
+            try:
+                current = await authenticated_session(session_token)
+            except HTTPException as error:
+                if error.status_code != 401:
+                    raise
+        await attach_repository_ci_status(dashboard, current)
+        return dashboard
 
     @app.put("/api/projects/{project_id}/plan/source-branch")
     async def update_plan_source_branch(

@@ -97,6 +97,19 @@ export type CloneState = {
   behind: number;
 };
 
+export type RepositoryCiStatus = {
+  branch: string;
+  state: "success" | "not_found" | "unavailable" | "authentication_required";
+  workflow_name?: string;
+  run_number?: number;
+  run_attempt?: number;
+  event?: string;
+  head_sha?: string;
+  html_url?: string;
+  completed_at?: string;
+  message?: string;
+};
+
 export type Repository = {
   repository_id: string;
   project_id: string;
@@ -109,6 +122,7 @@ export type Repository = {
   last_generated_digest: string | null;
   clone_state: CloneState | null;
   clone_error: string | null;
+  ci_cd: RepositoryCiStatus;
 };
 
 export type GitHubAccount = {

@@ -1,3 +1,3 @@
 """StateForge Development Progress Tracking."""
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"

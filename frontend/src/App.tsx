@@ -1426,6 +1426,7 @@ function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: {
   return (
     <>
       <PageHeader eyebrow="Project overview" title={`${dashboard.project.name} ${dashboard.project.release}`} description="The canonical project plan and current GitHub delivery evidence." actions={<button className="button button-primary" onClick={onReconcile}><RefreshCw />Reconcile GitHub</button>} />
+      <RepositoryCiStrip repositories={dashboard.repositories} onAddRepository={onAddRepository} />
       <section className="metric-grid">
         <MetricCard label="Trusted complete" value={`${completed}/${total}`} detail={`${progress}% of the current release`} tone="blue" icon={<ShieldCheck />} />
         <MetricCard label="Ready to build" value={String(dashboard.metrics.actionable)} detail="All prerequisites satisfied" tone="green" icon={<Sparkles />} />
@@ -1437,7 +1438,6 @@ function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: {
         <ReleaseProgressMap dashboard={dashboard} onOpenStep={onOpenStep} />
         <article className="panel"><PanelTitle title="Ready now" meta={`${ready.length} shown`} />{ready.length ? <div className="compact-list">{ready.map((step) => <StepRow key={step.step_id} step={step} onClick={() => onOpenStep(step)} />)}</div> : <EmptyMini title="No ready work" text="Complete an upstream dependency to unlock the next step." />}</article>
         <article className="panel"><PanelTitle title="Active reviews" meta={`${review.length} shown`} />{review.length ? <div className="compact-list">{review.map((step) => <StepRow key={step.step_id} step={step} onClick={() => onOpenStep(step)} />)}</div> : <EmptyMini title="No pull requests in review" text="GitHub reconciliation will place open PRs here." />}</article>
-        <article className="panel repo-health"><PanelTitle title="Repository health" meta={`${dashboard.repositories.length} managed`} />{dashboard.repositories.length ? dashboard.repositories.map((repository) => <RepositoryHealth key={repository.repository_id} repository={repository} />) : <EmptyMini title="No repositories connected" text="Add the repositories that make up this project." action={<button className="button button-secondary button-small" onClick={onAddRepository}><Plus />Add repository</button>} />}</article>
       </section>
     </>
   );
@@ -1463,8 +1463,57 @@ function ContextStatusPill({ step }: { step: Step }) {
   return <span className={`context-status-pill context-status-${step.context_readiness.state}`} title={step.context_readiness.reasons.join(" · ") || "Implementation context is approved"}><ShieldCheck />{step.context_readiness.ready ? "Context ready" : step.context_readiness.state.replaceAll("_", " ")}</span>;
 }
 
-function RepositoryHealth({ repository }: { repository: Repository }) {
-  return <div className="repo-health-row"><span className={repository.clone_state ? "repo-health-icon healthy" : "repo-health-icon"}><FolderGit2 /></span><div><strong>{repository.github_full_name}</strong><span>{repository.clone_state ? `${repository.clone_state.branch} · ${repository.clone_state.dirty ? "uncommitted changes" : "clean"}` : "No local clone attached"}</span></div><span className={repository.clone_state ? "health-label healthy" : "health-label"}>{repository.clone_state ? "Attached" : "Setup"}</span></div>;
+function RepositoryCiStrip({ repositories, onAddRepository }: { repositories: Repository[]; onAddRepository: () => void }) {
+  const branch = repositories[0]?.ci_cd.branch || "mvp/implementation";
+
+  return (
+    <section className="repository-ci-strip">
+      <header className="repository-ci-strip-header">
+        <span><GitBranch /><strong>CI/CD Status</strong><code>{branch}</code></span>
+        <small>{repositories.length} managed</small>
+      </header>
+      {repositories.length ? (
+        <div className="repository-ci-cards">
+          {repositories.map((repository) => <RepositoryCiCard key={repository.repository_id} repository={repository} />)}
+        </div>
+      ) : (
+        <button className="repository-ci-empty" onClick={onAddRepository}><Plus />Add a repository to track CI</button>
+      )}
+    </section>
+  );
+}
+
+function RepositoryCiCard({ repository }: { repository: Repository }) {
+  const ci = repository.ci_cd;
+  const completedAt = ci.completed_at ? timeAgo(ci.completed_at) : null;
+  const label = ci.state === "success"
+    ? "Passed"
+    : ci.state === "not_found"
+      ? "No success"
+      : ci.state === "authentication_required"
+        ? "Connect GitHub"
+        : "Unavailable";
+  const detail = ci.state === "success"
+    ? `${ci.workflow_name}${completedAt ? ` · ${completedAt}` : ""}`
+    : ci.message || `No successful workflow run found on ${ci.branch}`;
+  const icon = ci.state === "success" ? <CheckCircle2 /> : ci.state === "not_found" ? <CircleDot /> : <CircleAlert />;
+  const content = (
+    <>
+      <span className="repository-ci-card-icon">{icon}</span>
+      <span className="repository-ci-card-copy">
+        <strong>{repository.alias}</strong>
+        <small title={detail}>{detail}</small>
+      </span>
+      <span className="repository-ci-card-state">{label}</span>
+      {ci.state === "success" && ci.html_url && <ExternalLink />}
+    </>
+  );
+
+  return ci.state === "success" && ci.html_url ? (
+    <a className={`repository-ci-card repository-ci-card-${ci.state}`} href={ci.html_url} rel="noreferrer" target="_blank" title={`Open ${repository.github_full_name} workflow run #${ci.run_number}`}>{content}</a>
+  ) : (
+    <div className={`repository-ci-card repository-ci-card-${ci.state}`} title={`${repository.github_full_name}: ${detail}`}>{content}</div>
+  );
 }
 
 function RoadmapPage({ dashboard, onOpenBlocker, onOpenStep }: { dashboard: Dashboard; onOpenBlocker: (blocker: Blocker) => void; onOpenStep: (step: Step) => void }) {
