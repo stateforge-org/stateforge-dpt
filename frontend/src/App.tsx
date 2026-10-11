@@ -296,6 +296,24 @@ function App() {
       .finally(() => setLoading(false));
   }, [loadDashboard, route.projectId]);
 
+  const hasActiveCiRun = dashboard?.repositories.some(
+    (repository) => ["queued", "in_progress"].includes(repository.ci_cd.state),
+  ) ?? false;
+
+  useEffect(() => {
+    if (
+      route.page !== "overview"
+      || !route.projectId
+      || !session?.authenticated
+    ) return;
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void loadDashboard(route.projectId!).catch(() => undefined);
+    }, hasActiveCiRun ? 10_000 : 60_000);
+    return () => window.clearInterval(interval);
+  }, [hasActiveCiRun, loadDashboard, route.page, route.projectId, session?.authenticated]);
+
   useEffect(() => {
     if (route.page !== "activity" || !route.projectId) return;
     api<Activity[]>(`/api/projects/${route.projectId}/activity`)
@@ -1485,18 +1503,37 @@ function RepositoryCiStrip({ repositories, onAddRepository }: { repositories: Re
 
 function RepositoryCiCard({ repository }: { repository: Repository }) {
   const ci = repository.ci_cd;
-  const completedAt = ci.completed_at ? timeAgo(ci.completed_at) : null;
+  const observedAt = ci.completed_at || ci.updated_at;
+  const relativeTime = observedAt ? timeAgo(observedAt) : null;
   const label = ci.state === "success"
     ? "Passed"
+    : ci.state === "failure"
+      ? "Failed"
+      : ci.state === "cancelled"
+        ? "Cancelled"
+        : ci.state === "skipped"
+          ? "Skipped"
+          : ci.state === "in_progress"
+            ? "Running"
+            : ci.state === "queued"
+              ? "Queued"
     : ci.state === "not_found"
-      ? "No success"
+      ? "No runs"
       : ci.state === "authentication_required"
         ? "Connect GitHub"
         : "Unavailable";
-  const detail = ci.state === "success"
-    ? `${ci.workflow_name}${completedAt ? ` · ${completedAt}` : ""}`
-    : ci.message || `No successful workflow run found on ${ci.branch}`;
-  const icon = ci.state === "success" ? <CheckCircle2 /> : ci.state === "not_found" ? <CircleDot /> : <CircleAlert />;
+  const detail = ci.workflow_name
+    ? `${ci.workflow_name}${relativeTime ? ` · ${relativeTime}` : ""}`
+    : ci.message || `No workflow run found on ${ci.branch}`;
+  const icon = ci.state === "success"
+    ? <CheckCircle2 />
+    : ci.state === "in_progress"
+      ? <RefreshCw />
+      : ci.state === "queued" || ci.state === "skipped" || ci.state === "not_found"
+        ? <CircleDot />
+        : ci.state === "cancelled"
+          ? <X />
+          : <CircleAlert />;
   const content = (
     <>
       <span className="repository-ci-card-icon">{icon}</span>
@@ -1505,11 +1542,11 @@ function RepositoryCiCard({ repository }: { repository: Repository }) {
         <small title={detail}>{detail}</small>
       </span>
       <span className="repository-ci-card-state">{label}</span>
-      {ci.state === "success" && ci.html_url && <ExternalLink />}
+      {ci.html_url && <ExternalLink />}
     </>
   );
 
-  return ci.state === "success" && ci.html_url ? (
+  return ci.html_url ? (
     <a className={`repository-ci-card repository-ci-card-${ci.state}`} href={ci.html_url} rel="noreferrer" target="_blank" title={`Open ${repository.github_full_name} workflow run #${ci.run_number}`}>{content}</a>
   ) : (
     <div className={`repository-ci-card repository-ci-card-${ci.state}`} title={`${repository.github_full_name}: ${detail}`}>{content}</div>
