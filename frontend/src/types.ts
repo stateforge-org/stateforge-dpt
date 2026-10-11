@@ -99,13 +99,25 @@ export type CloneState = {
 
 export type RepositoryCiStatus = {
   branch: string;
-  state: "success" | "not_found" | "unavailable" | "authentication_required";
+  state:
+    | "queued"
+    | "in_progress"
+    | "success"
+    | "failure"
+    | "cancelled"
+    | "skipped"
+    | "not_found"
+    | "unavailable"
+    | "authentication_required";
   workflow_name?: string;
   run_number?: number;
   run_attempt?: number;
   event?: string;
+  status?: string;
+  conclusion?: string;
   head_sha?: string;
   html_url?: string;
+  updated_at?: string;
   completed_at?: string;
   message?: string;
 };

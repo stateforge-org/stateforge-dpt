@@ -2,9 +2,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from stateforge_dpt.app import SESSION_COOKIE, create_app
+from stateforge_dpt.app import SESSION_COOKIE, _workflow_run_state, create_app
 from stateforge_dpt.config import DEFAULT_GITHUB_CLIENT_ID, Settings
 from stateforge_dpt.git import read_remote_file
 from stateforge_dpt.github import GitHubClient
@@ -59,13 +60,36 @@ def test_repository_can_be_removed_without_deleting_project(tmp_path: Path) -> N
         assert activity[0]["kind"] == "repository.removed"
 
 
-def test_dashboard_fetches_latest_ci_success_for_managed_repositories(
+@pytest.mark.parametrize(
+    ("status", "conclusion", "expected"),
+    [
+        ("queued", None, "queued"),
+        ("in_progress", None, "in_progress"),
+        ("completed", "success", "success"),
+        ("completed", "failure", "failure"),
+        ("completed", "timed_out", "failure"),
+        ("completed", "cancelled", "cancelled"),
+        ("completed", "skipped", "skipped"),
+        ("completed", "neutral", "skipped"),
+    ],
+)
+def test_workflow_run_state_tracks_latest_github_outcome(
+    status: str,
+    conclusion: str | None,
+    expected: str,
+) -> None:
+    assert _workflow_run_state(
+        {"status": status, "conclusion": conclusion}
+    ) == expected
+
+
+def test_dashboard_fetches_latest_ci_run_for_managed_repositories(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[str, str]] = []
 
-    async def latest_successful_workflow_run(
+    async def latest_workflow_run(
         _client: GitHubClient,
         _access_token: str,
         full_name: str,
@@ -77,6 +101,8 @@ def test_dashboard_fetches_latest_ci_success_for_managed_repositories(
             "run_number": 42,
             "run_attempt": 2,
             "event": "push",
+            "status": "in_progress",
+            "conclusion": None,
             "head_sha": "abc123def456",
             "html_url": "https://github.com/stateforge-org/sandbox/actions/runs/42",
             "updated_at": "2026-10-11T09:15:00Z",
@@ -84,8 +110,8 @@ def test_dashboard_fetches_latest_ci_success_for_managed_repositories(
 
     monkeypatch.setattr(
         GitHubClient,
-        "latest_successful_workflow_run",
-        latest_successful_workflow_run,
+        "latest_workflow_run",
+        latest_workflow_run,
     )
 
     with TestClient(create_app(settings(tmp_path))) as client:
@@ -108,14 +134,17 @@ def test_dashboard_fetches_latest_ci_success_for_managed_repositories(
     assert calls == [("stateforge-org/sandbox", "mvp/implementation")]
     assert response.json()["repositories"][0]["ci_cd"] == {
         "branch": "mvp/implementation",
-        "state": "success",
+        "state": "in_progress",
         "workflow_name": "Provider CI",
         "run_number": 42,
         "run_attempt": 2,
         "event": "push",
+        "status": "in_progress",
+        "conclusion": "",
         "head_sha": "abc123def456",
         "html_url": "https://github.com/stateforge-org/sandbox/actions/runs/42",
-        "completed_at": "2026-10-11T09:15:00Z",
+        "updated_at": "2026-10-11T09:15:00Z",
+        "completed_at": "",
     }
 
 

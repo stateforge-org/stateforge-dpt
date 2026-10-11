@@ -365,13 +365,13 @@ class GitHubClient:
                     break
         return branches
 
-    async def latest_successful_workflow_run(
+    async def latest_workflow_run(
         self,
         access_token: str,
         full_name: str,
         branch: str,
     ) -> dict[str, Any] | None:
-        """Return the newest successful Actions run for one repository branch."""
+        """Return the newest Actions run for one repository branch."""
         async with httpx.AsyncClient(timeout=30) as client:
             payload = await self._request(
                 client,
@@ -380,7 +380,6 @@ class GitHubClient:
                 f"/repos/{full_name}/actions/runs",
                 params={
                     "branch": branch,
-                    "status": "success",
                     "per_page": 1,
                 },
             )

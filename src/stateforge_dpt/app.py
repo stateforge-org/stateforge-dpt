@@ -55,6 +55,24 @@ SESSION_COOKIE = "stateforge_dpt_session"
 ReconciliationReporter = Callable[[dict[str, object]], Awaitable[None]]
 
 
+def _workflow_run_state(run: dict[str, Any]) -> str:
+    """Normalize a GitHub workflow run into one dashboard state."""
+    status = str(run.get("status") or "").lower()
+    if status == "in_progress":
+        return "in_progress"
+    if status != "completed":
+        return "queued"
+
+    conclusion = str(run.get("conclusion") or "").lower()
+    if conclusion == "success":
+        return "success"
+    if conclusion == "cancelled":
+        return "cancelled"
+    if conclusion in {"neutral", "skipped"}:
+        return "skipped"
+    return "failure"
+
+
 def _github_full_name_from_api_url(value: object) -> str | None:
     """Extract owner/repository from a GitHub repository API URL."""
     if not isinstance(value, str):
@@ -131,7 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="StateForge DPT",
-        version="0.1.10",
+        version="0.1.11",
         docs_url="/api/docs",
         redoc_url=None,
         lifespan=lifespan,
@@ -217,7 +235,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if current is None:
                 return {**base, "state": "authentication_required"}
             try:
-                run = await github.latest_successful_workflow_run(
+                run = await github.latest_workflow_run(
                     str(current["access_token"]),
                     str(repository["github_full_name"]),
                     branch,
@@ -230,20 +248,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
             if run is None:
                 return {**base, "state": "not_found"}
+            state = _workflow_run_state(run)
+            updated_at = str(
+                run.get("updated_at")
+                or run.get("run_started_at")
+                or run.get("created_at")
+                or ""
+            )
             return {
                 **base,
-                "state": "success",
+                "state": state,
                 "workflow_name": str(run.get("name") or "GitHub Actions"),
                 "run_number": int(run.get("run_number") or 0),
                 "run_attempt": int(run.get("run_attempt") or 1),
                 "event": str(run.get("event") or ""),
+                "status": str(run.get("status") or ""),
+                "conclusion": str(run.get("conclusion") or ""),
                 "head_sha": str(run.get("head_sha") or ""),
                 "html_url": str(run.get("html_url") or ""),
-                "completed_at": str(
-                    run.get("updated_at")
-                    or run.get("run_started_at")
-                    or run.get("created_at")
-                    or ""
+                "updated_at": updated_at,
+                "completed_at": (
+                    updated_at
+                    if state not in {"queued", "in_progress"}
+                    else ""
                 ),
             }
 

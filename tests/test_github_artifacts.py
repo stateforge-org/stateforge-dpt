@@ -334,7 +334,7 @@ def test_repository_artifacts_include_timeline_and_review_comments(
     ]
 
 
-def test_latest_successful_workflow_run_is_scoped_to_branch(
+def test_latest_workflow_run_is_scoped_to_branch_without_status_filter(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -365,7 +365,7 @@ def test_latest_successful_workflow_run_is_scoped_to_branch(
     monkeypatch.setattr(github, "_request", request)
 
     run = asyncio.run(
-        github.latest_successful_workflow_run(
+        github.latest_workflow_run(
             "access-token",
             "stateforge-org/stateforge-provider-python",
             "mvp/implementation",
@@ -383,7 +383,6 @@ def test_latest_successful_workflow_run_is_scoped_to_branch(
         "path": "/repos/stateforge-org/stateforge-provider-python/actions/runs",
         "params": {
             "branch": "mvp/implementation",
-            "status": "success",
             "per_page": 1,
         },
     }

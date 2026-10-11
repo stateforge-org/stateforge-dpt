@@ -279,7 +279,12 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .repository-ci-card-copy strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .repository-ci-card-copy small { overflow: hidden; color: currentColor; font-size: 9px; opacity: .72; text-overflow: ellipsis; white-space: nowrap; }
 .repository-ci-card-state { padding: 3px 6px; border-radius: 999px; background: rgba(255,255,255,.62); font-size: 9px; font-weight: 800; white-space: nowrap; }
+.repository-ci-card-queued { border-color: #e5cf93; color: #8a6417; background: #fff8e8; }
+.repository-ci-card-in_progress { border-color: #a9c8ff; color: #285cae; background: #eef5ff; }
+.repository-ci-card-in_progress .repository-ci-card-icon svg { animation: spin 1.15s linear infinite; }
 .repository-ci-card-success { border-color: #a6dcc9; color: #087451; background: #edf9f5; }
+.repository-ci-card-failure { border-color: #e9aaaa; color: #a13636; background: #fdf0f0; }
+.repository-ci-card-cancelled, .repository-ci-card-skipped { border-color: #cfd7e2; color: #66758a; background: #f4f6f8; }
 .repository-ci-card-not_found { border-color: #ead192; color: #916210; background: #fff8e9; }
 .repository-ci-card-unavailable { border-color: #e9b4b4; color: #9b4040; background: #fdf0f0; }
 .repository-ci-card-authentication_required { border-color: #b8ccef; color: #3563aa; background: #f0f5fd; }
