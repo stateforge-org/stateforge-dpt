@@ -316,8 +316,19 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-composition > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .status-composition > header strong { font-size: 11px; }
 .status-composition > header span { color: #8793a5; font-size: 9px; }
-.status-composition-bar, .status-repository-bar { height: 9px; display: flex; gap: 2px; overflow: hidden; border-radius: 999px; background: #edf1f6; }
-.status-segment { display: block; min-width: 3px; height: 100%; }
+.status-composition-bar, .status-repository-bar { position: relative; height: 9px; display: flex; gap: 2px; overflow: visible; border-radius: 999px; background: #edf1f6; }
+.status-segment { display: block; min-width: 3px; height: 100%; border-radius: 999px; }
+.status-segment-interactive { position: relative; border: 0; outline: 0; cursor: help; transition: filter 140ms ease, box-shadow 140ms ease; }
+.status-segment-interactive:hover, .status-segment-interactive:focus-visible { z-index: 5; filter: brightness(1.08) saturate(1.12); box-shadow: 0 0 0 2px white, 0 0 0 3px rgba(56,78,111,.22); }
+.status-progress-tooltip, .status-cell-tooltip { position: absolute; z-index: 20; bottom: calc(100% + 9px); left: 50%; width: max-content; max-width: 230px; display: flex; align-items: flex-start; flex-direction: column; gap: 2px; padding: 7px 9px; border: 1px solid #d8e1ed; border-radius: 8px; color: #26364d; background: rgba(255,255,255,.98); box-shadow: 0 8px 22px rgba(29,45,70,.16); opacity: 0; pointer-events: none; transform: translate(-50%, 4px) scale(.96); transform-origin: bottom center; transition: opacity 120ms ease, transform 120ms ease; }
+.status-progress-tooltip::after, .status-cell-tooltip::after { position: absolute; top: 100%; left: 50%; width: 7px; height: 7px; border-right: 1px solid #d8e1ed; border-bottom: 1px solid #d8e1ed; background: white; content: ""; transform: translate(-50%,-4px) rotate(45deg); }
+.status-progress-tooltip strong { color: #18263a; font-size: 12px; line-height: 1; }
+.status-progress-tooltip small { color: #748197; font-size: 8px; font-style: normal; white-space: nowrap; }
+.status-segment-interactive:hover .status-progress-tooltip, .status-segment-interactive:focus-visible .status-progress-tooltip, .status-repository-cell:hover .status-cell-tooltip, .status-repository-cell:focus-visible .status-cell-tooltip { opacity: 1; transform: translate(-50%,0) scale(1); }
+.status-composition-bar > .status-segment-interactive:first-child .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:first-child .status-progress-tooltip { left: 0; transform: translate(0,4px) scale(.96); transform-origin: bottom left; }
+.status-composition-bar > .status-segment-interactive:first-child:hover .status-progress-tooltip, .status-composition-bar > .status-segment-interactive:first-child:focus-visible .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:first-child:hover .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:first-child:focus-visible .status-progress-tooltip { transform: translate(0,0) scale(1); }
+.status-composition-bar > .status-segment-interactive:last-child .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:last-child .status-progress-tooltip { right: 0; left: auto; transform: translate(0,4px) scale(.96); transform-origin: bottom right; }
+.status-composition-bar > .status-segment-interactive:last-child:hover .status-progress-tooltip, .status-composition-bar > .status-segment-interactive:last-child:focus-visible .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:last-child:hover .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:last-child:focus-visible .status-progress-tooltip { transform: translate(0,0) scale(1); }
 .status-segment-completed, .status-dot-completed { background: var(--green); }
 .status-segment-in_review, .status-dot-in_review { background: var(--purple); }
 .status-segment-ready, .status-dot-ready { background: var(--blue); }
@@ -328,6 +339,18 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-composition-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 14px; margin-top: 10px; color: #78869a; font-size: 9px; }
 .status-composition-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .status-dot { width: 7px; height: 7px; border-radius: 2px; }
+.status-repository-map { display: grid; gap: 7px; margin-top: 15px; border-top: 1px solid #edf1f5; padding-top: 13px; }
+.status-repository-map-row { min-width: 0; display: grid; grid-template-columns: minmax(105px,.16fr) minmax(0,1fr); align-items: center; gap: 12px; }
+.status-repository-map-row > header { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 7px; }
+.status-repository-map-row > header strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.status-repository-map-row > header span { flex: none; color: #8a96a7; font-size: 8px; }
+.status-repository-cells { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
+.status-repository-cell { position: relative; width: 19px; height: 13px; flex: none; border: 0; border-radius: 3px; padding: 0; box-shadow: inset 0 0 0 1px rgba(19,38,68,.06); cursor: pointer; transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease; }
+.status-repository-cell:hover, .status-repository-cell:focus-visible { z-index: 6; outline: none; filter: brightness(1.08) saturate(1.12); box-shadow: inset 0 0 0 1px rgba(19,38,68,.12), 0 4px 10px rgba(29,45,70,.16); transform: translateY(-2px); }
+.status-cell-tooltip { bottom: calc(100% + 8px); }
+.status-cell-tooltip strong { font-size: 9px; white-space: nowrap; }
+.status-cell-tooltip small { overflow: hidden; max-width: 210px; color: #748197; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.status-repository-cells-empty { color: #909cad; font-size: 8px; font-style: italic; }
 .status-dashboard-grid { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(260px,.7fr); gap: 14px; }
 .status-panel { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: white; box-shadow: 0 5px 15px rgba(33,48,72,.025); }
 .status-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 17px 19px 12px; }
@@ -338,17 +361,30 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-trend-legend i { width: 7px; height: 7px; border-radius: 50%; }
 .status-trend-legend i.complete { background: var(--blue); }
 .status-trend-legend i.scope { background: var(--purple); }
-.status-chart-wrap { padding: 0 10px; }
+.status-trend-summary { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; padding: 0 19px 5px; }
+.status-trend-summary > span { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid #e5eaf1; border-radius: 9px; background: linear-gradient(135deg,#fbfcff,#f5f8fd); }
+.status-trend-summary small { color: #8290a4; font-size: 7px; font-weight: 850; letter-spacing: .08em; }
+.status-trend-summary strong { color: #314560; font-size: 11px; }
+.status-trend-summary > span:first-child strong { color: var(--blue-dark); }
+.status-chart-wrap { position: relative; margin: 4px 10px 0; padding: 0; border-radius: 10px; background: radial-gradient(circle at 50% 42%,rgba(55,125,255,.04),transparent 42%); }
 .status-chart-wrap svg { width: 100%; height: auto; display: block; overflow: visible; }
 .status-chart-grid line { stroke: #dfe7f1; stroke-width: 1; stroke-dasharray: 3 5; }
 .status-chart-y-labels text, .status-chart-x-label { fill: #8491a4; font-size: 9px; }
 .status-chart-line { fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .status-chart-scope { stroke: var(--purple); stroke-dasharray: 7 5; }
 .status-chart-completed { stroke: var(--blue); }
+.status-chart-scope-area { fill: url(#status-scope-area); }
 .status-chart-area { fill: url(#status-complete-area); }
 .status-chart-point { fill: white; stroke-width: 2.4; }
 .status-chart-point-scope { stroke: var(--purple); }
 .status-chart-point-completed { stroke: var(--blue); }
+.status-chart-baseline-guide { stroke-width: 1.3; stroke-dasharray: 4 5; opacity: .7; }
+.status-chart-baseline-guide.scope { stroke: var(--purple); }
+.status-chart-baseline-guide.complete { stroke: var(--blue); }
+.status-chart-baseline-range { stroke: url(#status-baseline-range); stroke-width: 4; stroke-linecap: round; opacity: .8; }
+.status-chart-value-label { font-size: 8px; font-weight: 800; }
+.status-chart-value-label.scope { fill: var(--purple); }
+.status-chart-value-label.complete { fill: var(--blue-dark); }
 .status-chart-empty-label { fill: #8b97a8; font-size: 10px; }
 .status-trend-panel > footer { padding: 3px 19px 14px; color: #8995a6; font-size: 9px; }
 .status-repository-list { display: grid; gap: 1px; padding: 4px 18px 16px; }
@@ -414,6 +450,7 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
   .status-quick-metrics > span:nth-child(2) { border-right: 0; }
   .status-quick-metrics > span:nth-child(-n+2) { border-bottom: 1px solid #e7ecf2; }
   .status-trend-legend { justify-content: flex-start; }
+  .status-repository-map-row { grid-template-columns: 95px minmax(0,1fr); }
   .status-panel-header { flex-direction: column; }
   .status-critical-path { scroll-snap-type: x proximity; }
   .status-critical-item { flex: 0 0 190px; scroll-snap-align: start; }
@@ -426,6 +463,9 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
   .status-position-copy { padding-right: 20px; }
   .status-completion-ring { justify-self: start; margin: 0 0 0 20px; }
   .status-composition-legend { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .status-repository-map-row { grid-template-columns: 1fr; gap: 5px; }
+  .status-repository-map-row > header { justify-content: flex-start; }
+  .status-trend-summary { grid-template-columns: 1fr; }
   .status-chart-y-labels text, .status-chart-x-label { font-size: 17px; }
   .status-chart-empty-label { font-size: 17px; }
 }
