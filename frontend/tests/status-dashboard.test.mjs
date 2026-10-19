@@ -98,7 +98,13 @@ test("renders trusted history, repository maps, progress tooltips, and clickable
   assert.equal((html.match(/status-chart-observation/g) || []).length, 2);
   assert.equal((html.match(/status-trend-legend/g) || []).length, 1);
   assert.match(html, /aria-pressed="true"/);
-  assert.match(html, /COMPLETION/);
+  assert.match(html, /TRUSTED COMPLETE/i);
+  assert.match(html, /IN REVIEW/);
+  assert.match(html, /PENDING/);
+  assert.match(html, /BLOCKED/);
+  assert.match(html, /PLANNED/);
+  assert.match(html, /CANCELLED/);
+  assert.match(html, /TOTAL SCOPE/);
   assert.match(html, /20%/);
   assert.match(html, /Progress by repository/);
   assert.equal((html.match(/status-repository-cell /g) || []).length, 5);

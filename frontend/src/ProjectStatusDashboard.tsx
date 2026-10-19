@@ -46,6 +46,19 @@ const chartStateOrder: StepState[] = [
   "cancelled",
 ];
 
+type TrendSeries = StepState | "scope";
+
+const trendSeries: Array<{ key: TrendSeries; label: string }> = [
+  { key: "completed", label: "Trusted complete" },
+  { key: "in_review", label: "In review" },
+  { key: "ready", label: "Ready" },
+  { key: "pending", label: "Pending" },
+  { key: "blocked", label: "Blocked" },
+  { key: "planned", label: "Planned" },
+  { key: "cancelled", label: "Cancelled" },
+  { key: "scope", label: "Total scope" },
+];
+
 function totalMilestones(snapshot: ProjectStatusSnapshot): number {
   return chartStateOrder.reduce((total, state) => total + (snapshot.metrics[state] || 0), 0);
 }
@@ -251,7 +264,16 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [pinnedIndex, setPinnedIndex] = useState<number | null>(null);
-  const [visibleSeries, setVisibleSeries] = useState({ completed: true, scope: true });
+  const [visibleSeries, setVisibleSeries] = useState<Record<TrendSeries, boolean>>({
+    completed: true,
+    in_review: true,
+    ready: true,
+    pending: true,
+    blocked: true,
+    planned: true,
+    cancelled: true,
+    scope: true,
+  });
   const width = 760;
   const height = 230;
   const bounds = { left: 48, right: 730, top: 24, bottom: 181 };
@@ -261,7 +283,11 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
     ? (bounds.left + bounds.right) / 2
     : bounds.left + (index / (observations.length - 1)) * (bounds.right - bounds.left);
   const y = (value: number) => bounds.bottom - (value / roundedMaximum) * (bounds.bottom - bounds.top);
-  const completedPath = observations.map((snapshot, index) => `${index ? "L" : "M"} ${x(index)} ${y(snapshot.metrics.completed || 0)}`).join(" ");
+  const statePaths = Object.fromEntries(chartStateOrder.map((state) => [
+    state,
+    observations.map((snapshot, index) => `${index ? "L" : "M"} ${x(index)} ${y(snapshot.metrics[state] || 0)}`).join(" "),
+  ])) as Record<StepState, string>;
+  const completedPath = statePaths.completed;
   const scopePath = observations.map((snapshot, index) => `${index ? "L" : "M"} ${x(index)} ${y(totalMilestones(snapshot))}`).join(" ");
   const areaPath = observations.length
     ? `${completedPath} L ${x(observations.length - 1)} ${bounds.bottom} L ${x(0)} ${bounds.bottom} Z`
@@ -276,7 +302,6 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
   const latestCompleted = latest?.metrics.completed || 0;
   const latestTotal = latest ? totalMilestones(latest) : 0;
   const latestPercent = latestTotal ? Math.round((latestCompleted / latestTotal) * 100) : 0;
-  const completedDelta = previous ? latestCompleted - (previous.metrics.completed || 0) : null;
   const requestedIndex = pinnedIndex ?? focusedIndex ?? hoveredIndex;
   const activeIndex = requestedIndex === null || !observations.length
     ? null
@@ -287,6 +312,14 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
   const activePercent = activeTotal ? Math.round((activeCompleted / activeTotal) * 100) : 0;
   const activePrevious = activeIndex !== null && activeIndex > 0 ? observations[activeIndex - 1] : null;
   const activeDelta = activePrevious ? activeCompleted - (activePrevious.metrics.completed || 0) : null;
+  const baselineSegments = latest
+    ? chartStateOrder.reduce<Array<{ end: number; start: number; state: StepState; value: number }>>((segments, state) => {
+      const value = latest.metrics[state] || 0;
+      const start = segments.at(-1)?.end || 0;
+      if (value) segments.push({ end: start + value, start, state, value });
+      return segments;
+    }, [])
+    : [];
 
   const indexFromPointer = (clientX: number, element: SVGSVGElement) => {
     if (!observations.length) return null;
@@ -297,10 +330,10 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
     return Math.max(0, Math.min(observations.length - 1, Math.round(ratio * (observations.length - 1))));
   };
 
-  const toggleSeries = (series: "completed" | "scope") => {
+  const toggleSeries = (series: TrendSeries) => {
     setVisibleSeries((current) => {
-      const other = series === "completed" ? "scope" : "completed";
-      if (current[series] && !current[other]) return current;
+      const visibleCount = Object.values(current).filter(Boolean).length;
+      if (current[series] && visibleCount === 1) return current;
       return { ...current, [series]: !current[series] };
     });
   };
@@ -310,18 +343,32 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
       <header className="status-panel-header">
         <div><span>DELIVERY TREND</span><h2>Progress versus release scope</h2></div>
         <div className="status-trend-legend" aria-label="Visible chart series">
-          <button aria-pressed={visibleSeries.completed} className={visibleSeries.completed ? "active" : ""} onClick={() => toggleSeries("completed")} type="button"><i className="complete" />Trusted complete</button>
-          <button aria-pressed={visibleSeries.scope} className={visibleSeries.scope ? "active" : ""} onClick={() => toggleSeries("scope")} type="button"><i className="scope" />Total scope</button>
+          {trendSeries.map((series) => (
+            <button
+              aria-pressed={visibleSeries[series.key]}
+              className={visibleSeries[series.key] ? "active" : ""}
+              key={series.key}
+              onClick={() => toggleSeries(series.key)}
+              type="button"
+            >
+              <i className={`series-${series.key}`} />{series.label}
+            </button>
+          ))}
         </div>
       </header>
       <div className="status-trend-summary">
-        <span><small>COMPLETION</small><strong>{latestPercent}%</strong></span>
-        <span><small>REMAINING</small><strong>{Math.max(0, latestTotal - latestCompleted)}</strong></span>
-        <span><small>CHANGE</small><strong>{completedDelta === null ? "Baseline" : `${completedDelta >= 0 ? "+" : ""}${completedDelta}`}</strong></span>
+        <span className="summary-completed"><small>COMPLETE</small><strong>{latestCompleted} · {latestPercent}%</strong></span>
+        <span className="summary-in_review"><small>IN REVIEW</small><strong>{latest?.metrics.in_review || 0}</strong></span>
+        <span className="summary-ready"><small>READY</small><strong>{latest?.metrics.ready || 0}</strong></span>
+        <span className="summary-pending"><small>PENDING</small><strong>{latest?.metrics.pending || 0}</strong></span>
+        <span className="summary-blocked"><small>BLOCKED</small><strong>{latest?.metrics.blocked || 0}</strong></span>
+        <span className="summary-planned"><small>PLANNED</small><strong>{latest?.metrics.planned || 0}</strong></span>
+        <span className="summary-cancelled"><small>CANCELLED</small><strong>{latest?.metrics.cancelled || 0}</strong></span>
+        <span className="summary-scope"><small>TOTAL SCOPE</small><strong>{latestTotal}</strong></span>
       </div>
       <div className={`status-chart-wrap${activeSnapshot ? " is-exploring" : ""}`}>
         <svg
-          aria-label="Trusted completed milestones compared with total release scope over time"
+          aria-label="Milestone states compared with total release scope over time"
           onClick={(event) => {
             const index = indexFromPointer(event.clientX, event.currentTarget);
             setPinnedIndex((current) => current === index ? null : index);
@@ -333,8 +380,8 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
         >
           <defs>
             <linearGradient id="status-complete-area" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="#377dff" stopOpacity=".3" />
-              <stop offset="100%" stopColor="#377dff" stopOpacity=".02" />
+              <stop offset="0%" stopColor="#0e9f6e" stopOpacity=".24" />
+              <stop offset="100%" stopColor="#0e9f6e" stopOpacity=".02" />
             </linearGradient>
             <linearGradient id="status-scope-area" x1="0" x2="0" y1="0" y2="1">
               <stop offset="0%" stopColor="#7864db" stopOpacity=".12" />
@@ -358,19 +405,28 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
           {visibleSeries.scope && scopeAreaPath && <path className="status-chart-scope-area" d={scopeAreaPath} />}
           {visibleSeries.completed && areaPath && observations.length > 1 && <path className="status-chart-area" d={areaPath} />}
           {visibleSeries.scope && scopePath && observations.length > 1 && <path className="status-chart-line status-chart-scope" d={scopePath} />}
-          {visibleSeries.completed && completedPath && observations.length > 1 && <path className="status-chart-line status-chart-completed" d={completedPath} />}
+          {observations.length > 1 && chartStateOrder.map((state) => visibleSeries[state] && statePaths[state]
+            ? <path className={`status-chart-line status-chart-series-${state}`} d={statePaths[state]} key={state} />
+            : null)}
           {observations.length === 1 && latest && (
             <g className="status-chart-baseline">
               {visibleSeries.scope && <>
-                <rect className="status-chart-baseline-column" height={bounds.bottom - y(latestTotal)} rx="10" width="52" x={x(0) - 26} y={y(latestTotal)} />
+                <rect className="status-chart-baseline-column" height={bounds.bottom - y(latestTotal)} rx="10" width="64" x={x(0) - 32} y={y(latestTotal)} />
                 <line className="status-chart-baseline-guide scope" x1={bounds.left} x2={bounds.right} y1={y(latestTotal)} y2={y(latestTotal)} />
                 <text className="status-chart-value-label scope" x={bounds.right - 5} y={y(latestTotal) - 8} textAnchor="end">{latestTotal} in scope</text>
               </>}
-              {visibleSeries.completed && <>
-                <rect className="status-chart-complete-column" height={bounds.bottom - y(latestCompleted)} rx="10" width="52" x={x(0) - 26} y={y(latestCompleted)} />
-                <line className="status-chart-baseline-guide complete" x1={bounds.left} x2={bounds.right} y1={y(latestCompleted)} y2={y(latestCompleted)} />
-                <text className="status-chart-value-label complete" x={bounds.right - 5} y={y(latestCompleted) - 8} textAnchor="end">{latestCompleted} complete</text>
-              </>}
+              {baselineSegments.map((segment) => visibleSeries[segment.state] ? (
+                <rect
+                  aria-label={`${segment.value} ${trendSeries.find((series) => series.key === segment.state)?.label}`}
+                  className={`status-chart-baseline-segment status-chart-fill-${segment.state}`}
+                  height={Math.max(2, y(segment.start) - y(segment.end))}
+                  key={segment.state}
+                  rx="4"
+                  width="52"
+                  x={x(0) - 26}
+                  y={y(segment.end)}
+                />
+              ) : null)}
             </g>
           )}
           {activeIndex !== null && <line className="status-chart-crosshair" x1={x(activeIndex)} x2={x(activeIndex)} y1={bounds.top} y2={bounds.bottom} />}
@@ -401,7 +457,15 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
               >
                 <rect className="status-chart-hit-target" height={Math.max(28, Math.abs(y(completed) - y(total)) + 28)} width="28" x={x(index) - 14} y={Math.min(y(completed), y(total)) - 14} />
                 {visibleSeries.scope && <circle className="status-chart-point status-chart-point-scope" cx={x(index)} cy={y(total)} r={selected ? "6" : "4"} />}
-                {visibleSeries.completed && <circle className="status-chart-point status-chart-point-completed" cx={x(index)} cy={y(completed)} r={selected ? "6" : "4"} />}
+                {chartStateOrder.map((state) => visibleSeries[state] ? (
+                  <circle
+                    className={`status-chart-point status-chart-point-${state}`}
+                    cx={x(index)}
+                    cy={y(snapshot.metrics[state] || 0)}
+                    key={state}
+                    r={selected ? "5" : "3"}
+                  />
+                ) : null)}
                 {labelIndices.has(index) && <text className="status-chart-x-label" x={x(index)} y={height - 18} textAnchor={index === 0 ? "start" : index === observations.length - 1 ? "end" : "middle"}>{formatObservationDate(snapshot.recorded_at)}</text>}
               </g>
             );
@@ -418,7 +482,16 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
           >
             <small>{formatObservationDate(activeSnapshot.recorded_at)}{pinnedIndex === activeIndex ? " · PINNED" : ""}</small>
             <strong>{activePercent}% complete</strong>
-            <span>{activeCompleted} trusted · {Math.max(0, activeTotal - activeCompleted)} remaining</span>
+            <span>{activeCompleted} trusted · {Math.max(0, activeTotal - activeCompleted)} remaining · {activeTotal} total</span>
+            <div className="status-chart-inspector-metrics">
+              {chartStateOrder.map((state) => (
+                <span key={state}>
+                  <i className={`series-${state}`} />
+                  <span>{stateLabels[state]}</span>
+                  <b>{activeSnapshot.metrics[state] || 0}</b>
+                </span>
+              ))}
+            </div>
             <em>{activeDelta === null ? "Baseline observation" : `${activeDelta >= 0 ? "+" : ""}${activeDelta} completed since prior observation`}</em>
           </div>
         )}
