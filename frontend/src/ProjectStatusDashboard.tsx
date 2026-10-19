@@ -13,14 +13,11 @@ import { createPortal } from "react-dom";
 
 import {
   blockerBlastRadius,
-  compactHistory,
   criticalPath,
-  deliveryStates,
   projectPosition,
 } from "./statusDashboard";
 import type {
   Dashboard,
-  ProjectStatusSnapshot,
   RepositoryStatusMetrics,
   Step,
   StepState,
@@ -45,29 +42,6 @@ const chartStateOrder: StepState[] = [
   "planned",
   "cancelled",
 ];
-
-type TrendSeries = StepState | "scope";
-
-const trendSeries: Array<{ key: TrendSeries; label: string }> = [
-  { key: "completed", label: "Trusted complete" },
-  { key: "in_review", label: "In review" },
-  { key: "ready", label: "Ready" },
-  { key: "pending", label: "Pending" },
-  { key: "blocked", label: "Blocked" },
-  { key: "planned", label: "Planned" },
-  { key: "cancelled", label: "Cancelled" },
-  { key: "scope", label: "Total scope" },
-];
-
-function totalMilestones(snapshot: ProjectStatusSnapshot): number {
-  return chartStateOrder.reduce((total, state) => total + (snapshot.metrics[state] || 0), 0);
-}
-
-function formatObservationDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Current";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
-}
 
 function CompletionRing({ completed, total }: { completed: number; total: number }) {
   const percent = total ? Math.round((completed / total) * 100) : 0;
@@ -259,241 +233,140 @@ function ReleaseComposition({ dashboard, onOpenStep }: { dashboard: Dashboard; o
   );
 }
 
-function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
-  const observations = compactHistory(history);
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
-  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null);
-  const [visibleSeries, setVisibleSeries] = useState<Record<TrendSeries, boolean>>({
-    completed: true,
-    in_review: true,
-    ready: true,
-    pending: true,
-    blocked: true,
-    planned: true,
-    cancelled: true,
-    scope: true,
-  });
-  const width = 760;
-  const height = 230;
-  const bounds = { left: 48, right: 730, top: 24, bottom: 181 };
-  const maxValue = Math.max(5, ...observations.map(totalMilestones));
-  const roundedMaximum = Math.ceil(maxValue / 5) * 5;
-  const x = (index: number) => observations.length <= 1
-    ? (bounds.left + bounds.right) / 2
-    : bounds.left + (index / (observations.length - 1)) * (bounds.right - bounds.left);
-  const y = (value: number) => bounds.bottom - (value / roundedMaximum) * (bounds.bottom - bounds.top);
-  const statePaths = Object.fromEntries(chartStateOrder.map((state) => [
-    state,
-    observations.map((snapshot, index) => `${index ? "L" : "M"} ${x(index)} ${y(snapshot.metrics[state] || 0)}`).join(" "),
-  ])) as Record<StepState, string>;
-  const scopePath = observations.map((snapshot, index) => `${index ? "L" : "M"} ${x(index)} ${y(totalMilestones(snapshot))}`).join(" ");
-  const labelIndices = new Set([0, Math.floor((observations.length - 1) / 2), observations.length - 1]);
-  const gridValues = [0.25, 0.5, 0.75, 1].map((ratio) => Math.round(roundedMaximum * ratio));
-  const latest = observations.at(-1);
-  const previous = observations.at(-2);
-  const latestCompleted = latest?.metrics.completed || 0;
-  const latestTotal = latest ? totalMilestones(latest) : 0;
-  const latestPercent = latestTotal ? Math.round((latestCompleted / latestTotal) * 100) : 0;
-  const requestedIndex = pinnedIndex ?? focusedIndex ?? hoveredIndex;
-  const activeIndex = requestedIndex === null || !observations.length
-    ? null
-    : Math.max(0, Math.min(requestedIndex, observations.length - 1));
-  const activeSnapshot = activeIndex === null ? null : observations[activeIndex];
-  const activeCompleted = activeSnapshot?.metrics.completed || 0;
-  const activeTotal = activeSnapshot ? totalMilestones(activeSnapshot) : 0;
-  const activePercent = activeTotal ? Math.round((activeCompleted / activeTotal) * 100) : 0;
-  const activePrevious = activeIndex !== null && activeIndex > 0 ? observations[activeIndex - 1] : null;
-  const activeDelta = activePrevious ? activeCompleted - (activePrevious.metrics.completed || 0) : null;
-  const indexFromPointer = (clientX: number, element: SVGSVGElement) => {
-    if (!observations.length) return null;
-    if (observations.length === 1) return 0;
-    const rectangle = element.getBoundingClientRect();
-    const chartX = ((clientX - rectangle.left) / rectangle.width) * width;
-    const ratio = (chartX - bounds.left) / (bounds.right - bounds.left);
-    return Math.max(0, Math.min(observations.length - 1, Math.round(ratio * (observations.length - 1))));
-  };
+const readinessStates: StepState[] = ["completed", "in_review", "ready", "pending"];
 
-  const toggleSeries = (series: TrendSeries) => {
-    setVisibleSeries((current) => {
-      const visibleCount = Object.values(current).filter(Boolean).length;
-      if (current[series] && visibleCount === 1) return current;
-      return { ...current, [series]: !current[series] };
-    });
-  };
+function readinessCount(repository: RepositoryStatusMetrics): number {
+  return readinessStates.reduce((total, state) => total + (repository[state] || 0), 0);
+}
+
+function readinessPercent(repository: RepositoryStatusMetrics): number {
+  return repository.total ? Math.round((readinessCount(repository) / repository.total) * 100) : 0;
+}
+
+function RepositoryReadiness({ repositories }: { repositories: RepositoryStatusMetrics[] }) {
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const width = 920;
+  const height = 330;
+  const bounds = { left: 68, right: 884, top: 30, bottom: 266 };
+  const plotWidth = bounds.right - bounds.left;
+  const columnWidth = Math.min(82, Math.max(44, plotWidth / Math.max(1, repositories.length * 2.3)));
+  const x = (index: number) => repositories.length <= 1
+    ? (bounds.left + bounds.right) / 2
+    : bounds.left + ((index + 0.5) / repositories.length) * plotWidth;
+  const y = (percent: number) => bounds.bottom - (percent / 100) * (bounds.bottom - bounds.top);
+  const activeId = pinnedId ?? focusedId ?? hoveredId;
+  const activeIndex = activeId === null
+    ? -1
+    : repositories.findIndex((repository) => repository.repository_id === activeId);
+  const activeRepository = activeIndex >= 0 ? repositories[activeIndex] : null;
+  const totalMilestones = repositories.reduce((total, repository) => total + repository.total, 0);
+  const readyMilestones = repositories.reduce((total, repository) => total + readinessCount(repository), 0);
+  const overallReadiness = totalMilestones ? Math.round((readyMilestones / totalMilestones) * 100) : 0;
+  const gridValues = [0, 25, 50, 75, 100];
 
   return (
-    <article className="status-panel status-trend-panel">
-      <header className="status-panel-header">
-        <div><span>DELIVERY TREND</span><h2>Progress versus release scope</h2></div>
-        <div className="status-trend-legend" aria-label="Visible chart series">
-          {trendSeries.map((series) => (
-            <button
-              aria-pressed={visibleSeries[series.key]}
-              className={visibleSeries[series.key] ? "active" : ""}
-              key={series.key}
-              onClick={() => toggleSeries(series.key)}
-              type="button"
-            >
-              <i className={`series-${series.key}`} />{series.label}
-            </button>
-          ))}
+    <article className="status-panel status-readiness-panel">
+      <header className="status-panel-header status-readiness-header">
+        <div><span>DELIVERY READINESS</span><h2>Repository readiness</h2></div>
+        <div className="status-readiness-overview">
+          <strong>{overallReadiness}%</strong>
+          <span>{readyMilestones} of {totalMilestones} milestones ready or complete</span>
         </div>
       </header>
-      <div className="status-trend-summary">
-        <span className="summary-completed"><small>COMPLETE</small><strong>{latestCompleted} · {latestPercent}%</strong></span>
-        <span className="summary-in_review"><small>IN REVIEW</small><strong>{latest?.metrics.in_review || 0}</strong></span>
-        <span className="summary-ready"><small>READY</small><strong>{latest?.metrics.ready || 0}</strong></span>
-        <span className="summary-pending"><small>PENDING</small><strong>{latest?.metrics.pending || 0}</strong></span>
-        <span className="summary-blocked"><small>BLOCKED</small><strong>{latest?.metrics.blocked || 0}</strong></span>
-        <span className="summary-planned"><small>PLANNED</small><strong>{latest?.metrics.planned || 0}</strong></span>
-        <span className="summary-cancelled"><small>CANCELLED</small><strong>{latest?.metrics.cancelled || 0}</strong></span>
-        <span className="summary-scope"><small>TOTAL SCOPE</small><strong>{latestTotal}</strong></span>
+      <div className="status-readiness-legend" aria-label="Milestone states">
+        {chartStateOrder.map((state) => (
+          <span key={state}><i className={`status-dot status-dot-${state}`} />{stateLabels[state]}</span>
+        ))}
       </div>
-      <div className={`status-chart-wrap${activeSnapshot ? " is-exploring" : ""}`}>
-        <svg
-          aria-label="Milestone states compared with total release scope over time"
-          onClick={(event) => {
-            const index = indexFromPointer(event.clientX, event.currentTarget);
-            setPinnedIndex((current) => current === index ? null : index);
-          }}
-          onPointerLeave={() => setHoveredIndex(null)}
-          onPointerMove={(event) => setHoveredIndex(indexFromPointer(event.clientX, event.currentTarget))}
-          role="img"
-          viewBox={`0 0 ${width} ${height}`}
-        >
-          <g className="status-chart-grid">
-            {gridValues.map((value) => <line key={value} x1={bounds.left} x2={bounds.right} y1={y(value)} y2={y(value)} />)}
+      <div className={`status-readiness-chart${activeRepository ? " is-exploring" : ""}`}>
+        <svg aria-label="Repository readiness percentage by milestone state" role="img" viewBox={`0 0 ${width} ${height}`}>
+          <g className="status-readiness-grid">
+            {gridValues.map((value) => (
+              <g key={value}>
+                <line x1={bounds.left} x2={bounds.right} y1={y(value)} y2={y(value)} />
+                <text x={bounds.left - 15} y={y(value) + 4} textAnchor="end">{value}%</text>
+              </g>
+            ))}
           </g>
-          <g className="status-chart-y-labels">
-            {gridValues.map((value) => <text key={value} x={bounds.left - 11} y={y(value) + 4} textAnchor="end">{value}</text>)}
-          </g>
-          {visibleSeries.scope && scopePath && observations.length > 1 && <path className="status-chart-line status-chart-scope" d={scopePath} />}
-          {observations.length > 1 && chartStateOrder.map((state) => visibleSeries[state] && statePaths[state]
-            ? <path className={`status-chart-line status-chart-series-${state}`} d={statePaths[state]} key={state} />
-            : null)}
-          {observations.length === 1 && latest && (
-            <g className="status-chart-baseline">
-              {visibleSeries.scope && <>
-                <line className="status-chart-baseline-guide scope" x1={bounds.left} x2={bounds.right} y1={y(latestTotal)} y2={y(latestTotal)} />
-                <text className="status-chart-value-label scope" x={bounds.right - 5} y={y(latestTotal) - 8} textAnchor="end">{latestTotal} in scope</text>
-              </>}
-              {chartStateOrder.map((state) => {
-                const value = latest.metrics[state] || 0;
-                if (!visibleSeries[state] || !value) return null;
-                return (
-                  <g key={state}>
-                    <line
-                      className={`status-chart-baseline-stub status-chart-series-${state}`}
-                      x1={x(0) - 25}
-                      x2={x(0) + 25}
-                      y1={y(value)}
-                      y2={y(value)}
-                    />
-                    <text
-                      className={`status-chart-value-label status-chart-value-${state}`}
-                      x={x(0) + 35}
-                      y={y(value) + 3}
-                    >
-                      {value} {stateLabels[state].toLowerCase()}
-                    </text>
-                  </g>
-                );
-              })}
-            </g>
-          )}
-          {activeIndex !== null && <line className="status-chart-crosshair" x1={x(activeIndex)} x2={x(activeIndex)} y1={bounds.top} y2={bounds.bottom} />}
-          {observations.map((snapshot, index) => {
-            const selected = activeIndex === index;
-            const total = totalMilestones(snapshot);
-            const completed = snapshot.metrics.completed || 0;
+          <text className="status-readiness-axis-title" textAnchor="middle" transform={`translate(18 ${(bounds.top + bounds.bottom) / 2}) rotate(-90)`}>READINESS</text>
+          {repositories.map((repository, index) => {
+            const center = x(index);
+            const percent = readinessPercent(repository);
+            let cumulative = 0;
             return (
               <g
-                aria-label={`${formatObservationDate(snapshot.recorded_at)}: ${completed} of ${total} milestones complete`}
-                aria-pressed={pinnedIndex === index}
-                className={`status-chart-observation${selected ? " selected" : ""}`}
-                key={`${snapshot.snapshot_id ?? "current"}-${snapshot.recorded_at}`}
-                onBlur={() => setFocusedIndex(null)}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setPinnedIndex((current) => current === index ? null : index);
-                }}
-                onFocus={() => setFocusedIndex(index)}
+                aria-label={repository.total
+                  ? `${repository.alias}: ${percent}% ready, ${readinessCount(repository)} of ${repository.total} milestones ready or complete`
+                  : `${repository.alias}: not planned`}
+                aria-pressed={pinnedId === repository.repository_id}
+                className={`status-readiness-repository${activeId === repository.repository_id ? " selected" : ""}`}
+                key={repository.repository_id}
+                onBlur={() => setFocusedId(null)}
+                onClick={() => setPinnedId((current) => current === repository.repository_id ? null : repository.repository_id)}
+                onFocus={() => setFocusedId(repository.repository_id)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    setPinnedIndex((current) => current === index ? null : index);
+                    setPinnedId((current) => current === repository.repository_id ? null : repository.repository_id);
                   }
                 }}
+                onMouseEnter={() => setHoveredId(repository.repository_id)}
+                onMouseLeave={() => setHoveredId(null)}
                 role="button"
                 tabIndex={0}
               >
-                <rect className="status-chart-hit-target" height={Math.max(28, Math.abs(y(completed) - y(total)) + 28)} width="28" x={x(index) - 14} y={Math.min(y(completed), y(total)) - 14} />
-                {visibleSeries.scope && <circle className="status-chart-point status-chart-point-scope" cx={x(index)} cy={y(total)} r={selected ? "6" : "4"} />}
-                {chartStateOrder.map((state) => visibleSeries[state] ? (
-                  <circle
-                    className={`status-chart-point status-chart-point-${state}`}
-                    cx={x(index)}
-                    cy={y(snapshot.metrics[state] || 0)}
-                    key={state}
-                    r={selected ? "5" : "3"}
-                  />
-                ) : null)}
-                {labelIndices.has(index) && <text className="status-chart-x-label" x={x(index)} y={height - 18} textAnchor={index === 0 ? "start" : index === observations.length - 1 ? "end" : "middle"}>{formatObservationDate(snapshot.recorded_at)}</text>}
+                <rect className="status-readiness-hit-target" height={height - 8} width={Math.max(columnWidth + 42, 105)} x={center - Math.max(columnWidth + 42, 105) / 2} y="4" />
+                <rect className={`status-readiness-column${repository.total ? "" : " empty"}`} height={bounds.bottom - bounds.top} rx="9" width={columnWidth} x={center - columnWidth / 2} y={bounds.top} />
+                {repository.total && chartStateOrder.map((state) => {
+                  const value = repository[state] || 0;
+                  if (!value) return null;
+                  const start = (cumulative / repository.total) * 100;
+                  cumulative += value;
+                  const end = (cumulative / repository.total) * 100;
+                  return (
+                    <rect
+                      className={`status-readiness-segment status-readiness-segment-${state}`}
+                      height={Math.max(2, y(start) - y(end))}
+                      key={state}
+                      width={columnWidth}
+                      x={center - columnWidth / 2}
+                      y={y(end)}
+                    />
+                  );
+                })}
+                {repository.total ? <>
+                  <line className="status-readiness-marker" x1={center - columnWidth / 2 - 6} x2={center + columnWidth / 2 + 6} y1={y(percent)} y2={y(percent)} />
+                  <circle className="status-readiness-marker-dot" cx={center} cy={y(percent)} r="5" />
+                  <text className="status-readiness-value" textAnchor="middle" x={center} y={Math.max(bounds.top + 13, y(percent) - 12)}>{percent}% ready</text>
+                </> : (
+                  <text className="status-readiness-not-planned" textAnchor="middle" x={center} y={(bounds.top + bounds.bottom) / 2}>Not planned</text>
+                )}
+                <text className="status-readiness-repository-label" textAnchor="middle" x={center} y={bounds.bottom + 26}>{repository.alias}</text>
               </g>
             );
           })}
-          {observations.length === 1 && <text className="status-chart-empty-label" x={width / 2} y={height / 2 + 33} textAnchor="middle">Baseline captured · the next reconciliation extends each line</text>}
         </svg>
-        {activeSnapshot && activeIndex !== null && (
+        {activeRepository && activeIndex >= 0 && (
           <div
-            className={`status-chart-inspector${pinnedIndex === activeIndex ? " pinned" : ""}${x(activeIndex) > width * .64 ? " align-left" : ""}`}
-            style={{
-              left: `${(x(activeIndex) / width) * 100}%`,
-              top: `${Math.max(8, (Math.min(y(activeCompleted), y(activeTotal)) / height) * 100)}%`,
-            }}
+            className={`status-readiness-inspector${pinnedId === activeRepository.repository_id ? " pinned" : ""}${x(activeIndex) > width * .68 ? " align-left" : ""}`}
+            style={{ left: `${(x(activeIndex) / width) * 100}%`, top: "12%" }}
           >
-            <small>{formatObservationDate(activeSnapshot.recorded_at)}{pinnedIndex === activeIndex ? " · PINNED" : ""}</small>
-            <strong>{activePercent}% complete</strong>
-            <span>{activeCompleted} trusted · {Math.max(0, activeTotal - activeCompleted)} remaining · {activeTotal} total</span>
-            <div className="status-chart-inspector-metrics">
-              {chartStateOrder.map((state) => (
-                <span key={state}>
-                  <i className={`series-${state}`} />
-                  <span>{stateLabels[state]}</span>
-                  <b>{activeSnapshot.metrics[state] || 0}</b>
-                </span>
-              ))}
-            </div>
-            <em>{activeDelta === null ? "Baseline observation" : `${activeDelta >= 0 ? "+" : ""}${activeDelta} completed since prior observation`}</em>
+            <small>{activeRepository.alias}{pinnedId === activeRepository.repository_id ? " · PINNED" : ""}</small>
+            {activeRepository.total ? <>
+              <strong>{readinessPercent(activeRepository)}% ready</strong>
+              <span>{readinessCount(activeRepository)} of {activeRepository.total} milestones ready or complete</span>
+              <div className="status-readiness-inspector-metrics">
+                {chartStateOrder.map((state) => (
+                  <span key={state}><i className={`status-dot status-dot-${state}`} /><span>{stateLabels[state]}</span><b>{activeRepository[state] || 0}</b></span>
+                ))}
+              </div>
+            </> : <strong>Not planned</strong>}
           </div>
         )}
       </div>
-      <footer><span>Each successful GitHub reconciliation adds a trusted observation.</span><span>Hover or focus to inspect · click to pin</span></footer>
-    </article>
-  );
-}
-
-function RepositoryProgress({ repositories }: { repositories: RepositoryStatusMetrics[] }) {
-  return (
-    <article className="status-panel status-repositories-panel">
-      <header className="status-panel-header"><div><span>WORKSTREAMS</span><h2>Progress by repository</h2></div></header>
-      <div className="status-repository-list">
-        {repositories.map((repository) => {
-          const percent = repository.total ? Math.round((repository.completed / repository.total) * 100) : 0;
-          return (
-            <div className="status-repository-row" key={repository.repository_id}>
-              <header><strong>{repository.alias}</strong><span>{repository.completed}/{repository.total} · {percent}%</span></header>
-              <div className="status-repository-bar" role="group" aria-label={`${repository.alias}: ${repository.completed} of ${repository.total} milestones complete`}>
-                {repository.total ? deliveryStates.map((state) => {
-                  const count = repository[state] || 0;
-                  return count ? <ProgressSegment context={repository.alias} count={count} key={state} state={state} total={repository.total} /> : null;
-                }) : <i className="status-repository-empty" />}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <footer><span>Readiness includes complete, in-review, ready, and pending milestones.</span><span>Hover or focus to inspect · click to pin</span></footer>
     </article>
   );
 }
@@ -575,8 +448,7 @@ export function ProjectStatusDashboard({ dashboard, onOpenStep }: { dashboard: D
         <ReleaseComposition dashboard={dashboard} onOpenStep={onOpenStep} />
       </article>
       <section className="status-dashboard-grid">
-        <DeliveryTrend history={dashboard.history} />
-        <RepositoryProgress repositories={dashboard.repository_metrics} />
+        <RepositoryReadiness repositories={dashboard.repository_metrics} />
         <CriticalPath dashboard={dashboard} onOpenStep={onOpenStep} />
       </section>
       <FocusStrip dashboard={dashboard} onOpenStep={onOpenStep} />

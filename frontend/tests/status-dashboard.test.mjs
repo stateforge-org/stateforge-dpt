@@ -71,6 +71,7 @@ function dashboardFixture() {
       { repository_id: "protocol", alias: "protocol", total: 1, completed: 1, in_review: 0, ready: 0, pending: 0, blocked: 0, planned: 0, cancelled: 0 },
       { repository_id: "provider", alias: "provider", total: 3, completed: 0, in_review: 1, ready: 0, pending: 0, blocked: 2, planned: 0, cancelled: 0 },
       { repository_id: "agent", alias: "agent", total: 1, completed: 0, in_review: 0, ready: 0, pending: 0, blocked: 1, planned: 0, cancelled: 0 },
+      { repository_id: "control-plane", alias: "control-plane", total: 0, completed: 0, in_review: 0, ready: 0, pending: 0, blocked: 0, planned: 0, cancelled: 0 },
     ],
     history: [
       { snapshot_id: 1, plan_revision: 7, source: "reconciliation", recorded_at: "2026-10-01T10:00:00Z", metrics: { ...metrics, completed: 0 }, repository_metrics: [] },
@@ -89,27 +90,21 @@ test("derives the active critical path and blocker blast radius", () => {
   });
 });
 
-test("renders trusted history, repository maps, progress tooltips, and clickable path nodes", () => {
+test("renders repository readiness, milestone maps, tooltips, and clickable path nodes", () => {
   const dashboard = dashboardFixture();
   const html = renderToStaticMarkup(createElement(ProjectStatusDashboard, { dashboard, onOpenStep() {} }));
-  assert.match(html, /Progress versus release scope/);
-  assert.match(html, /Each successful GitHub reconciliation adds a trusted observation/);
+  assert.match(html, /Repository readiness/);
+  assert.match(html, /40%/);
+  assert.match(html, /2 of 5 milestones ready or complete/);
+  assert.match(html, /Readiness includes complete, in-review, ready, and pending milestones/);
   assert.match(html, /Hover or focus to inspect · click to pin/);
-  assert.equal((html.match(/status-chart-observation/g) || []).length, 2);
-  assert.equal((html.match(/status-trend-legend/g) || []).length, 1);
-  assert.match(html, /aria-pressed="true"/);
-  assert.match(html, /TRUSTED COMPLETE/i);
-  assert.match(html, /IN REVIEW/);
-  assert.match(html, /PENDING/);
-  assert.match(html, /BLOCKED/);
-  assert.match(html, /PLANNED/);
-  assert.match(html, /CANCELLED/);
-  assert.match(html, /TOTAL SCOPE/);
-  assert.match(html, /20%/);
-  assert.match(html, /Progress by repository/);
+  assert.equal((html.match(/class="status-readiness-repository(?: selected)?"/g) || []).length, 4);
+  assert.match(html, /protocol: 100% ready, 1 of 1 milestones ready or complete/);
+  assert.match(html, /provider: 33% ready, 1 of 3 milestones ready or complete/);
+  assert.match(html, /control-plane: not planned/);
+  assert.match(html, /Not planned/);
   assert.equal((html.match(/status-repository-cell /g) || []).length, 5);
   assert.match(html, /Release: 3 blocked, 60%/);
-  assert.match(html, /provider: 2 blocked, 67%/);
   assert.match(html, /The shortest route through the remaining work/);
   assert.equal((html.match(/status-critical-node /g) || []).length, 4);
   assert.match(html, /1 directly blocked · 2 indirectly delayed/);
