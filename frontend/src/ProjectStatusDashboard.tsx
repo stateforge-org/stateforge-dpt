@@ -8,7 +8,8 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import {
   blockerBlastRadius,
@@ -77,6 +78,51 @@ function CompletionRing({ completed, total }: { completed: number; total: number
   );
 }
 
+type TooltipPosition = {
+  left: number;
+  placement: "above" | "below" | "left" | "right";
+  top: number;
+};
+
+function tooltipPosition(element: HTMLElement, tooltipWidth = 220): TooltipPosition {
+  const bounds = element.getBoundingClientRect();
+  const gap = 10;
+  if (window.innerWidth - bounds.right >= tooltipWidth + gap) {
+    return { left: bounds.right + gap, placement: "right", top: bounds.top + bounds.height / 2 };
+  }
+  if (bounds.left >= tooltipWidth + gap) {
+    return { left: bounds.left - gap, placement: "left", top: bounds.top + bounds.height / 2 };
+  }
+  const left = Math.min(
+    window.innerWidth - tooltipWidth / 2 - gap,
+    Math.max(tooltipWidth / 2 + gap, bounds.left + bounds.width / 2),
+  );
+  if (bounds.top >= 72) {
+    return { left, placement: "above", top: bounds.top - gap };
+  }
+  return { left, placement: "below", top: bounds.bottom + gap };
+}
+
+function FloatingTooltip({
+  children,
+  position,
+}: {
+  children: ReactNode;
+  position: TooltipPosition | null;
+}) {
+  if (!position || typeof document === "undefined") return null;
+  return createPortal(
+    <span
+      className={`status-floating-tooltip status-floating-tooltip-${position.placement}`}
+      role="tooltip"
+      style={{ left: position.left, top: position.top }}
+    >
+      {children}
+    </span>,
+    document.body,
+  );
+}
+
 function ProgressSegment({
   state,
   count,
@@ -90,19 +136,58 @@ function ProgressSegment({
 }) {
   const percent = total ? Math.round((count / total) * 100) : 0;
   const label = `${context}: ${count} ${stateLabels[state].toLowerCase()}, ${percent}%`;
+  const [position, setPosition] = useState<TooltipPosition | null>(null);
+  const showTooltip = (element: HTMLElement) => setPosition(tooltipPosition(element, 112));
   return (
-    <span
-      aria-label={label}
-      className={`status-segment status-segment-${state} status-segment-interactive`}
-      role="img"
-      style={{ width: `${(count / total) * 100}%` }}
-      tabIndex={0}
-    >
-      <span aria-hidden="true" className="status-progress-tooltip">
+    <>
+      <span
+        aria-label={label}
+        className={`status-segment status-segment-${state} status-segment-interactive`}
+        onBlur={() => setPosition(null)}
+        onFocus={(event) => showTooltip(event.currentTarget)}
+        onMouseEnter={(event) => showTooltip(event.currentTarget)}
+        onMouseLeave={() => setPosition(null)}
+        role="img"
+        style={{ width: `${(count / total) * 100}%` }}
+        tabIndex={0}
+      />
+      <FloatingTooltip position={position}>
         <strong>{percent}%</strong>
         <small>{count} {stateLabels[state]}</small>
-      </span>
-    </span>
+      </FloatingTooltip>
+    </>
+  );
+}
+
+function RepositoryMilestoneCell({
+  onOpenStep,
+  step,
+}: {
+  onOpenStep: (step: Step) => void;
+  step: Step;
+}) {
+  const [position, setPosition] = useState<TooltipPosition | null>(null);
+  const showTooltip = (element: HTMLElement) => setPosition(tooltipPosition(element));
+  return (
+    <>
+      <button
+        aria-label={`${step.step_id}, ${step.title}, ${stateLabels[step.computed_state]}`}
+        className={`status-repository-cell status-segment-${step.computed_state}`}
+        onBlur={() => setPosition(null)}
+        onClick={() => {
+          setPosition(null);
+          onOpenStep(step);
+        }}
+        onFocus={(event) => showTooltip(event.currentTarget)}
+        onMouseEnter={(event) => showTooltip(event.currentTarget)}
+        onMouseLeave={() => setPosition(null)}
+        type="button"
+      />
+      <FloatingTooltip position={position}>
+        <strong>{step.step_id} · {stateLabels[step.computed_state]}</strong>
+        <small>{step.title}</small>
+      </FloatingTooltip>
+    </>
   );
 }
 
@@ -129,20 +214,7 @@ function RepositoryMilestoneMap({
               <span>{repository.completed}/{repository.total} · {percent}%</span>
             </header>
             <div className="status-repository-cells">
-              {milestones.map((step) => (
-                <button
-                  aria-label={`${step.step_id}, ${step.title}, ${stateLabels[step.computed_state]}`}
-                  className={`status-repository-cell status-segment-${step.computed_state}`}
-                  key={step.step_id}
-                  onClick={() => onOpenStep(step)}
-                  type="button"
-                >
-                  <span aria-hidden="true" className="status-cell-tooltip">
-                    <strong>{step.step_id} · {stateLabels[step.computed_state]}</strong>
-                    <small>{step.title}</small>
-                  </span>
-                </button>
-              ))}
+              {milestones.map((step) => <RepositoryMilestoneCell key={step.step_id} onOpenStep={onOpenStep} step={step} />)}
               {!milestones.length && <span className="status-repository-cells-empty">No milestones</span>}
             </div>
           </div>
@@ -176,6 +248,10 @@ function ReleaseComposition({ dashboard, onOpenStep }: { dashboard: Dashboard; o
 
 function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
   const observations = compactHistory(history);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null);
+  const [visibleSeries, setVisibleSeries] = useState({ completed: true, scope: true });
   const width = 760;
   const height = 230;
   const bounds = { left: 48, right: 730, top: 24, bottom: 181 };
@@ -201,32 +277,76 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
   const latestTotal = latest ? totalMilestones(latest) : 0;
   const latestPercent = latestTotal ? Math.round((latestCompleted / latestTotal) * 100) : 0;
   const completedDelta = previous ? latestCompleted - (previous.metrics.completed || 0) : null;
+  const requestedIndex = pinnedIndex ?? focusedIndex ?? hoveredIndex;
+  const activeIndex = requestedIndex === null || !observations.length
+    ? null
+    : Math.max(0, Math.min(requestedIndex, observations.length - 1));
+  const activeSnapshot = activeIndex === null ? null : observations[activeIndex];
+  const activeCompleted = activeSnapshot?.metrics.completed || 0;
+  const activeTotal = activeSnapshot ? totalMilestones(activeSnapshot) : 0;
+  const activePercent = activeTotal ? Math.round((activeCompleted / activeTotal) * 100) : 0;
+  const activePrevious = activeIndex !== null && activeIndex > 0 ? observations[activeIndex - 1] : null;
+  const activeDelta = activePrevious ? activeCompleted - (activePrevious.metrics.completed || 0) : null;
+
+  const indexFromPointer = (clientX: number, element: SVGSVGElement) => {
+    if (!observations.length) return null;
+    if (observations.length === 1) return 0;
+    const rectangle = element.getBoundingClientRect();
+    const chartX = ((clientX - rectangle.left) / rectangle.width) * width;
+    const ratio = (chartX - bounds.left) / (bounds.right - bounds.left);
+    return Math.max(0, Math.min(observations.length - 1, Math.round(ratio * (observations.length - 1))));
+  };
+
+  const toggleSeries = (series: "completed" | "scope") => {
+    setVisibleSeries((current) => {
+      const other = series === "completed" ? "scope" : "completed";
+      if (current[series] && !current[other]) return current;
+      return { ...current, [series]: !current[series] };
+    });
+  };
 
   return (
     <article className="status-panel status-trend-panel">
       <header className="status-panel-header">
         <div><span>DELIVERY TREND</span><h2>Progress versus release scope</h2></div>
-        <div className="status-trend-legend"><span><i className="complete" />Trusted complete</span><span><i className="scope" />Total scope</span></div>
+        <div className="status-trend-legend" aria-label="Visible chart series">
+          <button aria-pressed={visibleSeries.completed} className={visibleSeries.completed ? "active" : ""} onClick={() => toggleSeries("completed")} type="button"><i className="complete" />Trusted complete</button>
+          <button aria-pressed={visibleSeries.scope} className={visibleSeries.scope ? "active" : ""} onClick={() => toggleSeries("scope")} type="button"><i className="scope" />Total scope</button>
+        </div>
       </header>
       <div className="status-trend-summary">
         <span><small>COMPLETION</small><strong>{latestPercent}%</strong></span>
         <span><small>REMAINING</small><strong>{Math.max(0, latestTotal - latestCompleted)}</strong></span>
         <span><small>CHANGE</small><strong>{completedDelta === null ? "Baseline" : `${completedDelta >= 0 ? "+" : ""}${completedDelta}`}</strong></span>
       </div>
-      <div className="status-chart-wrap">
-        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Trusted completed milestones compared with total release scope over time">
+      <div className={`status-chart-wrap${activeSnapshot ? " is-exploring" : ""}`}>
+        <svg
+          aria-label="Trusted completed milestones compared with total release scope over time"
+          onClick={(event) => {
+            const index = indexFromPointer(event.clientX, event.currentTarget);
+            setPinnedIndex((current) => current === index ? null : index);
+          }}
+          onPointerLeave={() => setHoveredIndex(null)}
+          onPointerMove={(event) => setHoveredIndex(indexFromPointer(event.clientX, event.currentTarget))}
+          role="img"
+          viewBox={`0 0 ${width} ${height}`}
+        >
           <defs>
             <linearGradient id="status-complete-area" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="#377dff" stopOpacity=".28" />
+              <stop offset="0%" stopColor="#377dff" stopOpacity=".3" />
               <stop offset="100%" stopColor="#377dff" stopOpacity=".02" />
             </linearGradient>
             <linearGradient id="status-scope-area" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="#7864db" stopOpacity=".11" />
+              <stop offset="0%" stopColor="#7864db" stopOpacity=".12" />
               <stop offset="100%" stopColor="#7864db" stopOpacity=".01" />
             </linearGradient>
-            <linearGradient id="status-baseline-range" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="#7864db" />
-              <stop offset="100%" stopColor="#377dff" />
+            <linearGradient id="status-baseline-column" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#7864db" stopOpacity=".32" />
+              <stop offset="100%" stopColor="#7864db" stopOpacity=".08" />
+            </linearGradient>
+            <linearGradient id="status-complete-column" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#5d96ff" />
+              <stop offset="100%" stopColor="#286ce7" />
             </linearGradient>
           </defs>
           <g className="status-chart-grid">
@@ -235,30 +355,75 @@ function DeliveryTrend({ history }: { history: ProjectStatusSnapshot[] }) {
           <g className="status-chart-y-labels">
             {gridValues.map((value) => <text key={value} x={bounds.left - 11} y={y(value) + 4} textAnchor="end">{value}</text>)}
           </g>
-          {scopeAreaPath && <path className="status-chart-scope-area" d={scopeAreaPath} />}
-          {areaPath && <path className="status-chart-area" d={areaPath} />}
-          {scopePath && <path className="status-chart-line status-chart-scope" d={scopePath} />}
-          {completedPath && <path className="status-chart-line status-chart-completed" d={completedPath} />}
+          {visibleSeries.scope && scopeAreaPath && <path className="status-chart-scope-area" d={scopeAreaPath} />}
+          {visibleSeries.completed && areaPath && observations.length > 1 && <path className="status-chart-area" d={areaPath} />}
+          {visibleSeries.scope && scopePath && observations.length > 1 && <path className="status-chart-line status-chart-scope" d={scopePath} />}
+          {visibleSeries.completed && completedPath && observations.length > 1 && <path className="status-chart-line status-chart-completed" d={completedPath} />}
           {observations.length === 1 && latest && (
             <g className="status-chart-baseline">
-              <line className="status-chart-baseline-guide scope" x1={bounds.left} x2={bounds.right} y1={y(latestTotal)} y2={y(latestTotal)} />
-              <line className="status-chart-baseline-guide complete" x1={bounds.left} x2={bounds.right} y1={y(latestCompleted)} y2={y(latestCompleted)} />
-              <line className="status-chart-baseline-range" x1={x(0)} x2={x(0)} y1={y(latestTotal)} y2={y(latestCompleted)} />
-              <text className="status-chart-value-label scope" x={bounds.right - 5} y={y(latestTotal) - 8} textAnchor="end">{latestTotal} in scope</text>
-              <text className="status-chart-value-label complete" x={bounds.right - 5} y={y(latestCompleted) - 8} textAnchor="end">{latestCompleted} complete</text>
+              {visibleSeries.scope && <>
+                <rect className="status-chart-baseline-column" height={bounds.bottom - y(latestTotal)} rx="10" width="52" x={x(0) - 26} y={y(latestTotal)} />
+                <line className="status-chart-baseline-guide scope" x1={bounds.left} x2={bounds.right} y1={y(latestTotal)} y2={y(latestTotal)} />
+                <text className="status-chart-value-label scope" x={bounds.right - 5} y={y(latestTotal) - 8} textAnchor="end">{latestTotal} in scope</text>
+              </>}
+              {visibleSeries.completed && <>
+                <rect className="status-chart-complete-column" height={bounds.bottom - y(latestCompleted)} rx="10" width="52" x={x(0) - 26} y={y(latestCompleted)} />
+                <line className="status-chart-baseline-guide complete" x1={bounds.left} x2={bounds.right} y1={y(latestCompleted)} y2={y(latestCompleted)} />
+                <text className="status-chart-value-label complete" x={bounds.right - 5} y={y(latestCompleted) - 8} textAnchor="end">{latestCompleted} complete</text>
+              </>}
             </g>
           )}
-          {observations.map((snapshot, index) => (
-            <g key={`${snapshot.snapshot_id ?? "current"}-${snapshot.recorded_at}`}>
-              <circle className="status-chart-point status-chart-point-scope" cx={x(index)} cy={y(totalMilestones(snapshot))} r="4"><title>{`${formatObservationDate(snapshot.recorded_at)}: ${totalMilestones(snapshot)} milestones in scope`}</title></circle>
-              <circle className="status-chart-point status-chart-point-completed" cx={x(index)} cy={y(snapshot.metrics.completed || 0)} r="4"><title>{`${formatObservationDate(snapshot.recorded_at)}: ${snapshot.metrics.completed || 0} trusted complete`}</title></circle>
-              {labelIndices.has(index) && <text className="status-chart-x-label" x={x(index)} y={height - 18} textAnchor={index === 0 ? "start" : index === observations.length - 1 ? "end" : "middle"}>{formatObservationDate(snapshot.recorded_at)}</text>}
-            </g>
-          ))}
-          {observations.length === 1 && <text className="status-chart-empty-label" x={width / 2} y={height / 2 + 33} textAnchor="middle">Baseline captured · trend builds with each reconciliation</text>}
+          {activeIndex !== null && <line className="status-chart-crosshair" x1={x(activeIndex)} x2={x(activeIndex)} y1={bounds.top} y2={bounds.bottom} />}
+          {observations.map((snapshot, index) => {
+            const selected = activeIndex === index;
+            const total = totalMilestones(snapshot);
+            const completed = snapshot.metrics.completed || 0;
+            return (
+              <g
+                aria-label={`${formatObservationDate(snapshot.recorded_at)}: ${completed} of ${total} milestones complete`}
+                aria-pressed={pinnedIndex === index}
+                className={`status-chart-observation${selected ? " selected" : ""}`}
+                key={`${snapshot.snapshot_id ?? "current"}-${snapshot.recorded_at}`}
+                onBlur={() => setFocusedIndex(null)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPinnedIndex((current) => current === index ? null : index);
+                }}
+                onFocus={() => setFocusedIndex(index)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setPinnedIndex((current) => current === index ? null : index);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <rect className="status-chart-hit-target" height={Math.max(28, Math.abs(y(completed) - y(total)) + 28)} width="28" x={x(index) - 14} y={Math.min(y(completed), y(total)) - 14} />
+                {visibleSeries.scope && <circle className="status-chart-point status-chart-point-scope" cx={x(index)} cy={y(total)} r={selected ? "6" : "4"} />}
+                {visibleSeries.completed && <circle className="status-chart-point status-chart-point-completed" cx={x(index)} cy={y(completed)} r={selected ? "6" : "4"} />}
+                {labelIndices.has(index) && <text className="status-chart-x-label" x={x(index)} y={height - 18} textAnchor={index === 0 ? "start" : index === observations.length - 1 ? "end" : "middle"}>{formatObservationDate(snapshot.recorded_at)}</text>}
+              </g>
+            );
+          })}
+          {observations.length === 1 && <text className="status-chart-empty-label" x={width / 2} y={height / 2 + 33} textAnchor="middle">Explore the baseline · reconciliation builds the trend</text>}
         </svg>
+        {activeSnapshot && activeIndex !== null && (
+          <div
+            className={`status-chart-inspector${pinnedIndex === activeIndex ? " pinned" : ""}${x(activeIndex) > width * .64 ? " align-left" : ""}`}
+            style={{
+              left: `${(x(activeIndex) / width) * 100}%`,
+              top: `${Math.max(8, (Math.min(y(activeCompleted), y(activeTotal)) / height) * 100)}%`,
+            }}
+          >
+            <small>{formatObservationDate(activeSnapshot.recorded_at)}{pinnedIndex === activeIndex ? " · PINNED" : ""}</small>
+            <strong>{activePercent}% complete</strong>
+            <span>{activeCompleted} trusted · {Math.max(0, activeTotal - activeCompleted)} remaining</span>
+            <em>{activeDelta === null ? "Baseline observation" : `${activeDelta >= 0 ? "+" : ""}${activeDelta} completed since prior observation`}</em>
+          </div>
+        )}
       </div>
-      <footer>Each successful GitHub reconciliation adds a trusted observation.</footer>
+      <footer><span>Each successful GitHub reconciliation adds a trusted observation.</span><span>Hover or focus to inspect · click to pin</span></footer>
     </article>
   );
 }

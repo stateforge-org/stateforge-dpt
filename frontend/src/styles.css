@@ -320,15 +320,19 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-segment { display: block; min-width: 3px; height: 100%; border-radius: 999px; }
 .status-segment-interactive { position: relative; border: 0; outline: 0; cursor: help; transition: filter 140ms ease, box-shadow 140ms ease; }
 .status-segment-interactive:hover, .status-segment-interactive:focus-visible { z-index: 5; filter: brightness(1.08) saturate(1.12); box-shadow: 0 0 0 2px white, 0 0 0 3px rgba(56,78,111,.22); }
-.status-progress-tooltip, .status-cell-tooltip { position: absolute; z-index: 20; bottom: calc(100% + 9px); left: 50%; width: max-content; max-width: 230px; display: flex; align-items: flex-start; flex-direction: column; gap: 2px; padding: 7px 9px; border: 1px solid #d8e1ed; border-radius: 8px; color: #26364d; background: rgba(255,255,255,.98); box-shadow: 0 8px 22px rgba(29,45,70,.16); opacity: 0; pointer-events: none; transform: translate(-50%, 4px) scale(.96); transform-origin: bottom center; transition: opacity 120ms ease, transform 120ms ease; }
-.status-progress-tooltip::after, .status-cell-tooltip::after { position: absolute; top: 100%; left: 50%; width: 7px; height: 7px; border-right: 1px solid #d8e1ed; border-bottom: 1px solid #d8e1ed; background: white; content: ""; transform: translate(-50%,-4px) rotate(45deg); }
-.status-progress-tooltip strong { color: #18263a; font-size: 12px; line-height: 1; }
-.status-progress-tooltip small { color: #748197; font-size: 8px; font-style: normal; white-space: nowrap; }
-.status-segment-interactive:hover .status-progress-tooltip, .status-segment-interactive:focus-visible .status-progress-tooltip, .status-repository-cell:hover .status-cell-tooltip, .status-repository-cell:focus-visible .status-cell-tooltip { opacity: 1; transform: translate(-50%,0) scale(1); }
-.status-composition-bar > .status-segment-interactive:first-child .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:first-child .status-progress-tooltip { left: 0; transform: translate(0,4px) scale(.96); transform-origin: bottom left; }
-.status-composition-bar > .status-segment-interactive:first-child:hover .status-progress-tooltip, .status-composition-bar > .status-segment-interactive:first-child:focus-visible .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:first-child:hover .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:first-child:focus-visible .status-progress-tooltip { transform: translate(0,0) scale(1); }
-.status-composition-bar > .status-segment-interactive:last-child .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:last-child .status-progress-tooltip { right: 0; left: auto; transform: translate(0,4px) scale(.96); transform-origin: bottom right; }
-.status-composition-bar > .status-segment-interactive:last-child:hover .status-progress-tooltip, .status-composition-bar > .status-segment-interactive:last-child:focus-visible .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:last-child:hover .status-progress-tooltip, .status-repository-bar > .status-segment-interactive:last-child:focus-visible .status-progress-tooltip { transform: translate(0,0) scale(1); }
+.status-floating-tooltip { position: fixed; z-index: 1000; width: max-content; max-width: min(260px,calc(100vw - 20px)); display: flex; align-items: flex-start; flex-direction: column; gap: 3px; padding: 8px 10px; border: 1px solid #2e405a; border-radius: 8px; color: #fff; background: #17253a; box-shadow: 0 10px 28px rgba(15,27,45,.28); pointer-events: none; animation: status-tooltip-in 100ms ease-out; }
+.status-floating-tooltip::after { position: absolute; width: 8px; height: 8px; border: solid #2e405a; background: #17253a; content: ""; transform: rotate(45deg); }
+.status-floating-tooltip strong { max-width: 240px; overflow: hidden; color: #fff; font-size: 10px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.status-floating-tooltip small { max-width: 240px; overflow: hidden; color: #c6d2e2; font-size: 8px; font-style: normal; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.status-floating-tooltip-right { transform: translateY(-50%); }
+.status-floating-tooltip-right::after { top: 50%; right: 100%; border-width: 0 0 1px 1px; transform: translate(5px,-50%) rotate(45deg); }
+.status-floating-tooltip-left { transform: translate(-100%,-50%); }
+.status-floating-tooltip-left::after { top: 50%; left: 100%; border-width: 1px 1px 0 0; transform: translate(-5px,-50%) rotate(45deg); }
+.status-floating-tooltip-above { transform: translate(-50%,-100%); }
+.status-floating-tooltip-above::after { top: 100%; left: 50%; border-width: 0 1px 1px 0; transform: translate(-50%,-5px) rotate(45deg); }
+.status-floating-tooltip-below { transform: translateX(-50%); }
+.status-floating-tooltip-below::after { bottom: 100%; left: 50%; border-width: 1px 0 0 1px; transform: translate(-50%,5px) rotate(45deg); }
+@keyframes status-tooltip-in { from { opacity: 0; } to { opacity: 1; } }
 .status-segment-completed, .status-dot-completed { background: var(--green); }
 .status-segment-in_review, .status-dot-in_review { background: var(--purple); }
 .status-segment-ready, .status-dot-ready { background: var(--blue); }
@@ -347,9 +351,6 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-repository-cells { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
 .status-repository-cell { position: relative; width: 19px; height: 13px; flex: none; border: 0; border-radius: 3px; padding: 0; box-shadow: inset 0 0 0 1px rgba(19,38,68,.06); cursor: pointer; transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease; }
 .status-repository-cell:hover, .status-repository-cell:focus-visible { z-index: 6; outline: none; filter: brightness(1.08) saturate(1.12); box-shadow: inset 0 0 0 1px rgba(19,38,68,.12), 0 4px 10px rgba(29,45,70,.16); transform: translateY(-2px); }
-.status-cell-tooltip { bottom: calc(100% + 8px); }
-.status-cell-tooltip strong { font-size: 9px; white-space: nowrap; }
-.status-cell-tooltip small { overflow: hidden; max-width: 210px; color: #748197; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .status-repository-cells-empty { color: #909cad; font-size: 8px; font-style: italic; }
 .status-dashboard-grid { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(260px,.7fr); gap: 14px; }
 .status-panel { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: white; box-shadow: 0 5px 15px rgba(33,48,72,.025); }
@@ -357,7 +358,9 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-panel-header h2 { margin: 4px 0 0; font-size: 15px; letter-spacing: -.015em; }
 .status-panel-header > small { color: #8290a4; font-size: 9px; }
 .status-trend-legend { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 10px; color: #78869a; font-size: 9px; }
-.status-trend-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.status-trend-legend button { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 999px; padding: 5px 7px; color: #8793a5; background: transparent; font: inherit; font-weight: 750; cursor: pointer; opacity: .5; transition: color 120ms ease, background 120ms ease, opacity 120ms ease; }
+.status-trend-legend button:hover, .status-trend-legend button:focus-visible { outline: none; color: #50627b; background: #f0f4f9; opacity: .85; }
+.status-trend-legend button.active { color: #52647d; background: #f4f7fb; opacity: 1; }
 .status-trend-legend i { width: 7px; height: 7px; border-radius: 50%; }
 .status-trend-legend i.complete { background: var(--blue); }
 .status-trend-legend i.scope { background: var(--purple); }
@@ -366,8 +369,9 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-trend-summary small { color: #8290a4; font-size: 7px; font-weight: 850; letter-spacing: .08em; }
 .status-trend-summary strong { color: #314560; font-size: 11px; }
 .status-trend-summary > span:first-child strong { color: var(--blue-dark); }
-.status-chart-wrap { position: relative; margin: 4px 10px 0; padding: 0; border-radius: 10px; background: radial-gradient(circle at 50% 42%,rgba(55,125,255,.04),transparent 42%); }
-.status-chart-wrap svg { width: 100%; height: auto; display: block; overflow: visible; }
+.status-chart-wrap { position: relative; margin: 4px 10px 0; overflow: hidden; border: 1px solid transparent; border-radius: 10px; padding: 0; background: radial-gradient(circle at 50% 42%,rgba(55,125,255,.07),transparent 40%),linear-gradient(180deg,rgba(247,250,255,.72),rgba(255,255,255,0)); transition: border-color 140ms ease, box-shadow 140ms ease; }
+.status-chart-wrap.is-exploring { border-color: #dce7f6; box-shadow: inset 0 0 0 1px rgba(55,125,255,.025); }
+.status-chart-wrap svg { width: 100%; height: auto; display: block; overflow: visible; cursor: crosshair; }
 .status-chart-grid line { stroke: #dfe7f1; stroke-width: 1; stroke-dasharray: 3 5; }
 .status-chart-y-labels text, .status-chart-x-label { fill: #8491a4; font-size: 9px; }
 .status-chart-line { fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
@@ -375,9 +379,15 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-chart-completed { stroke: var(--blue); }
 .status-chart-scope-area { fill: url(#status-scope-area); }
 .status-chart-area { fill: url(#status-complete-area); }
+.status-chart-baseline-column { fill: url(#status-baseline-column); }
+.status-chart-complete-column { fill: url(#status-complete-column); filter: drop-shadow(0 7px 8px rgba(55,125,255,.2)); }
 .status-chart-point { fill: white; stroke-width: 2.4; }
 .status-chart-point-scope { stroke: var(--purple); }
 .status-chart-point-completed { stroke: var(--blue); }
+.status-chart-observation { outline: none; }
+.status-chart-hit-target { fill: transparent; cursor: pointer; }
+.status-chart-observation.selected .status-chart-point { stroke-width: 3; filter: drop-shadow(0 3px 4px rgba(45,73,116,.22)); }
+.status-chart-crosshair { stroke: #8da9cf; stroke-width: 1; stroke-dasharray: 3 4; pointer-events: none; }
 .status-chart-baseline-guide { stroke-width: 1.3; stroke-dasharray: 4 5; opacity: .7; }
 .status-chart-baseline-guide.scope { stroke: var(--purple); }
 .status-chart-baseline-guide.complete { stroke: var(--blue); }
@@ -386,7 +396,15 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-chart-value-label.scope { fill: var(--purple); }
 .status-chart-value-label.complete { fill: var(--blue-dark); }
 .status-chart-empty-label { fill: #8b97a8; font-size: 10px; }
-.status-trend-panel > footer { padding: 3px 19px 14px; color: #8995a6; font-size: 9px; }
+.status-chart-inspector { position: absolute; z-index: 4; width: 176px; display: flex; align-items: flex-start; flex-direction: column; gap: 3px; padding: 10px 11px; border: 1px solid #2e405a; border-radius: 10px; color: white; background: rgba(23,37,58,.97); box-shadow: 0 12px 28px rgba(15,27,45,.24); pointer-events: none; transform: translate(16px,-8px); animation: status-tooltip-in 100ms ease-out; }
+.status-chart-inspector.align-left { transform: translate(calc(-100% - 16px),-8px); }
+.status-chart-inspector small { color: #9fb2cd; font-size: 7px; font-weight: 850; letter-spacing: .07em; }
+.status-chart-inspector strong { margin-top: 2px; font-size: 13px; }
+.status-chart-inspector span { color: #d7dfeb; font-size: 8px; }
+.status-chart-inspector em { margin-top: 4px; color: #7fb0ff; font-size: 7px; font-style: normal; }
+.status-chart-inspector.pinned { border-color: #4e79bb; box-shadow: 0 12px 30px rgba(28,66,124,.26); }
+.status-trend-panel > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 19px 14px; color: #8995a6; font-size: 9px; }
+.status-trend-panel > footer span:last-child { color: #6f86a6; font-weight: 750; }
 .status-repository-list { display: grid; gap: 1px; padding: 4px 18px 16px; }
 .status-repository-row { padding: 11px 0; border-top: 1px solid #edf0f4; }
 .status-repository-row header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
@@ -466,6 +484,8 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
   .status-repository-map-row { grid-template-columns: 1fr; gap: 5px; }
   .status-repository-map-row > header { justify-content: flex-start; }
   .status-trend-summary { grid-template-columns: 1fr; }
+  .status-chart-inspector { width: 145px; }
+  .status-trend-panel > footer { align-items: flex-start; flex-direction: column; }
   .status-chart-y-labels text, .status-chart-x-label { font-size: 17px; }
   .status-chart-empty-label { font-size: 17px; }
 }

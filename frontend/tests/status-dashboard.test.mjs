@@ -94,6 +94,10 @@ test("renders trusted history, repository maps, progress tooltips, and clickable
   const html = renderToStaticMarkup(createElement(ProjectStatusDashboard, { dashboard, onOpenStep() {} }));
   assert.match(html, /Progress versus release scope/);
   assert.match(html, /Each successful GitHub reconciliation adds a trusted observation/);
+  assert.match(html, /Hover or focus to inspect · click to pin/);
+  assert.equal((html.match(/status-chart-observation/g) || []).length, 2);
+  assert.equal((html.match(/status-trend-legend/g) || []).length, 1);
+  assert.match(html, /aria-pressed="true"/);
   assert.match(html, /COMPLETION/);
   assert.match(html, /20%/);
   assert.match(html, /Progress by repository/);
