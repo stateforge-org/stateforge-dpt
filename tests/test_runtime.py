@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import os
 import sys
 import tomllib
@@ -140,9 +141,11 @@ def test_cli_prints_login_instructions_and_passes_resolved_settings(
 ):
     home, _, _ = runtime
     calls = []
-    monkeypatch.setattr(
-        cli.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs))
-    )
+
+    def run_server(*args, **kwargs):
+        calls.append((args, kwargs, logging.root.manager.disable))
+
+    monkeypatch.setattr(cli.uvicorn, "run", run_server)
     monkeypatch.setattr(
         sys, "argv", ["stateforge-dpt", "run", "--host", host, "--port", "9000"]
     )
@@ -162,9 +165,10 @@ def test_cli_prints_login_instructions_and_passes_resolved_settings(
         "host": host,
         "port": 9000,
         "reload": False,
-        "log_level": "warning",
+        "log_level": "error",
         "access_log": False,
     }
+    assert calls[0][2] == logging.WARNING
 
 
 def test_cli_data_directory_override_keeps_existing_workspaces_accessible(

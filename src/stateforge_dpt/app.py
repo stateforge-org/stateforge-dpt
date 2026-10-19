@@ -105,10 +105,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     mcp_application = None
     if resolved.mcp_enabled:
         # Keep the intentionally quiet DPT terminal banner free of dependency
-        # lifecycle chatter; warnings and errors remain visible.
-        logging.getLogger("mcp.server.streamable_http_manager").setLevel(
-            logging.WARNING
-        )
+        # lifecycle chatter; genuine errors remain visible.
+        logging.getLogger("mcp.server.streamable_http_manager").setLevel(logging.ERROR)
         mcp_server = create_mcp_server(
             service,
             proposals,
