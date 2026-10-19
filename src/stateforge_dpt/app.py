@@ -149,7 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="StateForge DPT",
-        version="0.1.11",
+        version="0.1.12",
         docs_url="/api/docs",
         redoc_url=None,
         lifespan=lifespan,
@@ -268,9 +268,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "html_url": str(run.get("html_url") or ""),
                 "updated_at": updated_at,
                 "completed_at": (
-                    updated_at
-                    if state not in {"queued", "in_progress"}
-                    else ""
+                    updated_at if state not in {"queued", "in_progress"} else ""
                 ),
             }
 
@@ -501,7 +499,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.to_thread(
                 service.inspect_step_context, project_id, str(step["step_id"])
             )
-        service.dashboard(project_id)
+        dashboard = service.dashboard(project_id)
+        service.record_project_status_snapshot(project_id, dashboard)
         return {
             "repositories": repository_count,
             "artifacts": total,

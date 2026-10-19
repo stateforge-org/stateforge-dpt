@@ -239,6 +239,17 @@ CREATE TABLE IF NOT EXISTS activities (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS project_status_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    plan_revision INTEGER NOT NULL,
+    plan_fingerprint TEXT,
+    source TEXT NOT NULL DEFAULT 'reconciliation',
+    metrics TEXT NOT NULL,
+    repository_metrics TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS remote_plan_snapshots (
     repository_id TEXT PRIMARY KEY
         REFERENCES repositories(repository_id) ON DELETE CASCADE,
@@ -301,6 +312,8 @@ CREATE INDEX IF NOT EXISTS idx_issue_dependencies_project
     ON github_issue_dependency_edges(project_id, blocked_artifact_id);
 CREATE INDEX IF NOT EXISTS idx_activities_project
     ON activities(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_project_status_snapshots_project
+    ON project_status_snapshots(project_id, snapshot_id DESC);
 CREATE INDEX IF NOT EXISTS idx_context_step
     ON step_context_resources(project_id, step_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_verification_step

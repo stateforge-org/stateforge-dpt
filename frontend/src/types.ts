@@ -323,6 +323,27 @@ export type StepState =
   | "completed"
   | "cancelled";
 
+export type RepositoryStatusMetrics = Record<StepState, number> & {
+  repository_id: string;
+  alias: string;
+  total: number;
+};
+
+export type ProjectStatusSnapshot = {
+  snapshot_id: number | null;
+  plan_revision: number;
+  plan_fingerprint: string | null;
+  source: "reconciliation" | "current" | string;
+  metrics: Record<StepState, number> & {
+    actionable: number;
+    findings: number;
+    active_blockers: number;
+    blocked_milestones: number;
+  };
+  repository_metrics: RepositoryStatusMetrics[];
+  recorded_at: string;
+};
+
 export type Step = {
   step_id: string;
   repository_id: string;
@@ -406,6 +427,8 @@ export type Dashboard = {
     active_blockers: number;
     blocked_milestones: number;
   };
+  repository_metrics: RepositoryStatusMetrics[];
+  history: ProjectStatusSnapshot[];
   findings: ReconciliationFinding[];
 };
 

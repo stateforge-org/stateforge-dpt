@@ -2347,6 +2347,29 @@ class DPTService:
             any(blocker["is_active"] for blocker in step["blockers"])
             for step in result_steps
         )
+        repository_metrics = self._repository_status_metrics(
+            repositories,
+            result_steps,
+        )
+        history = self.project_status_history(project_id)
+        current_observation = {
+            "snapshot_id": None,
+            "plan_revision": int(project["revision"]),
+            "plan_fingerprint": project.get("plan_fingerprint"),
+            "source": "current",
+            "metrics": metrics,
+            "repository_metrics": repository_metrics,
+            "recorded_at": project["updated_at"],
+        }
+        if not history or (
+            history[-1]["plan_revision"] != current_observation["plan_revision"]
+            or history[-1]["plan_fingerprint"]
+            != current_observation["plan_fingerprint"]
+            or history[-1]["metrics"] != current_observation["metrics"]
+            or history[-1]["repository_metrics"]
+            != current_observation["repository_metrics"]
+        ):
+            history.append(current_observation)
         return {
             "project": project,
             "repositories": repositories,
@@ -2360,7 +2383,114 @@ class DPTService:
                 ),
             ),
             "metrics": metrics,
+            "repository_metrics": repository_metrics,
+            "history": history,
             "findings": findings,
+        }
+
+    @staticmethod
+    def _repository_status_metrics(
+        repositories: list[dict[str, Any]],
+        steps: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Aggregate current milestone states for every repository."""
+        states = (
+            "planned",
+            "blocked",
+            "ready",
+            "pending",
+            "in_review",
+            "completed",
+            "cancelled",
+        )
+        result: list[dict[str, Any]] = []
+        for repository in repositories:
+            repository_id = str(repository["repository_id"])
+            repository_steps = [
+                step for step in steps if str(step["repository_id"]) == repository_id
+            ]
+            state_counts = {
+                state: sum(step["computed_state"] == state for step in repository_steps)
+                for state in states
+            }
+            result.append(
+                {
+                    "repository_id": repository_id,
+                    "alias": repository["alias"],
+                    "total": len(repository_steps),
+                    **state_counts,
+                }
+            )
+        return result
+
+    def project_status_history(
+        self,
+        project_id: str,
+        limit: int = 90,
+    ) -> list[dict[str, Any]]:
+        """Return oldest-to-newest project observations from reconciliation."""
+        self.project(project_id)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM project_status_snapshots
+                WHERE project_id = ?
+                ORDER BY snapshot_id DESC
+                LIMIT ?
+                """,
+                (project_id, min(max(limit, 1), 365)),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            item = _row_dict(row)
+            item.pop("project_id", None)
+            item["metrics"] = json.loads(item["metrics"])
+            item["repository_metrics"] = json.loads(item["repository_metrics"])
+            result.append(item)
+        return result
+
+    def record_project_status_snapshot(
+        self,
+        project_id: str,
+        dashboard: dict[str, Any] | None = None,
+        *,
+        source: str = "reconciliation",
+    ) -> dict[str, Any]:
+        """Persist an exact project-state observation after trusted refresh work."""
+        current = dashboard or self.dashboard(project_id)
+        project = current["project"]
+        timestamp = utc_now()
+        metrics = current["metrics"]
+        repository_metrics = current["repository_metrics"]
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO project_status_snapshots(
+                    project_id, plan_revision, plan_fingerprint, source,
+                    metrics, repository_metrics, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    int(project["revision"]),
+                    project.get("plan_fingerprint"),
+                    source,
+                    json.dumps(metrics, sort_keys=True),
+                    json.dumps(repository_metrics, sort_keys=True),
+                    timestamp,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise DPTError("Project status snapshot was not persisted")
+            snapshot_id = cursor.lastrowid
+        return {
+            "snapshot_id": snapshot_id,
+            "plan_revision": int(project["revision"]),
+            "plan_fingerprint": project.get("plan_fingerprint"),
+            "source": source,
+            "metrics": metrics,
+            "repository_metrics": repository_metrics,
+            "recorded_at": timestamp,
         }
 
     def portable_plan(
