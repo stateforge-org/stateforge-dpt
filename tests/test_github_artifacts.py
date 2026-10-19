@@ -334,6 +334,180 @@ def test_repository_artifacts_include_timeline_and_review_comments(
     ]
 
 
+def test_repository_delta_hydrates_only_changed_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    github = GitHubClient(
+        Settings(
+            host="127.0.0.1",
+            port=8463,
+            data_dir=tmp_path,
+            frontend_dir=tmp_path,
+            github_client_id=DEFAULT_GITHUB_CLIENT_ID,
+        )
+    )
+    requests: list[str] = []
+
+    async def request(_client, _token, method, path, **_kwargs):
+        assert method == "GET"
+        requests.append(path)
+        if path.endswith("/issues"):
+            return [
+                {
+                    "id": 101,
+                    "number": 7,
+                    "state": "closed",
+                    "updated_at": "2026-10-19T10:00:00Z",
+                },
+                {
+                    "id": 102,
+                    "number": 8,
+                    "state": "open",
+                    "updated_at": "2026-10-19T11:00:00Z",
+                },
+            ]
+        if path.endswith("/issues/8/timeline"):
+            return [{"id": 201, "event": "closed"}]
+        raise AssertionError(f"Unexpected GitHub path: {path}")
+
+    monkeypatch.setattr(github, "_request", request)
+
+    delta = asyncio.run(
+        github.repository_artifact_delta(
+            "access-token",
+            "stateforge-org/stateforge-agent",
+            "stateforge",
+            {
+                101: "2026-10-19T10:00:00Z",
+                102: "2026-10-19T10:30:00Z",
+            },
+        )
+    )
+
+    assert [item["id"] for item in delta.listed_items] == [101, 102]
+    assert [item["id"] for item in delta.changed_artifacts] == [102]
+    assert delta.unchanged == 1
+    assert requests == [
+        "/repos/stateforge-org/stateforge-agent/issues",
+        "/repos/stateforge-org/stateforge-agent/issues/8/timeline",
+    ]
+
+
+def test_incremental_artifact_reconciliation_retains_unchanged_rows(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    database = Database(data_dir / "dpt.sqlite3")
+    database.initialize()
+    service = DPTService(database, SecretStore(data_dir))
+    project = service.create_project(
+        ProjectCreate(name="StateForge", slug="stateforge", release="MVP")
+    )
+    repository = service.add_repository(
+        project["project_id"],
+        RepositoryCreate(
+            alias="agent",
+            github_full_name="stateforge-org/stateforge-agent",
+        ),
+    )
+    existing = {
+        "id": 101,
+        "number": 7,
+        "title": "Unchanged",
+        "state": "closed",
+        "html_url": "https://github.com/example/issues/7",
+        "labels": [],
+        "updated_at": "2026-10-19T10:00:00Z",
+    }
+    removed = {
+        "id": 102,
+        "number": 8,
+        "title": "Removed label",
+        "state": "open",
+        "html_url": "https://github.com/example/issues/8",
+        "labels": [],
+        "updated_at": "2026-10-19T10:00:00Z",
+    }
+    service.record_github_artifacts(
+        project["project_id"],
+        repository["repository_id"],
+        [existing, removed],
+    )
+    added = {
+        "id": 103,
+        "number": 9,
+        "title": "New issue",
+        "state": "open",
+        "html_url": "https://github.com/example/issues/9",
+        "labels": [],
+        "updated_at": "2026-10-19T11:00:00Z",
+    }
+
+    result = service.reconcile_github_artifacts(
+        project["project_id"],
+        repository["repository_id"],
+        {101, 103},
+        [added],
+    )
+    metadata = service.github_artifact_metadata(
+        project["project_id"], repository["repository_id"]
+    )
+
+    assert result == {"updated": 1, "removed": 1}
+    assert set(metadata) == {101, 103}
+    assert metadata[101]["updated_at"] == "2026-10-19T10:00:00Z"
+
+
+def test_get_requests_reuse_etag_payloads(tmp_path: Path) -> None:
+    github = GitHubClient(
+        Settings(
+            host="127.0.0.1",
+            port=8463,
+            data_dir=tmp_path,
+            frontend_dir=tmp_path,
+            github_client_id=DEFAULT_GITHUB_CLIENT_ID,
+        )
+    )
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                headers={"ETag": '"current"'},
+                json={"value": 1},
+            )
+        assert request.headers["If-None-Match"] == '"current"'
+        return httpx.Response(304)
+
+    async def request_twice() -> tuple[dict[str, int], dict[str, int]]:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            first = await github._request(
+                client,
+                "access-token",
+                "GET",
+                "/repos/stateforge-org/stateforge-agent/issues",
+                params={"state": "all"},
+            )
+            first["value"] = 99
+            second = await github._request(
+                client,
+                "access-token",
+                "GET",
+                "/repos/stateforge-org/stateforge-agent/issues",
+                params={"state": "all"},
+            )
+            return first, second
+
+    first, second = asyncio.run(request_twice())
+
+    assert first == {"value": 99}
+    assert second == {"value": 1}
+    assert len(requests) == 2
+
+
 def test_latest_workflow_run_is_scoped_to_branch_without_status_filter(
     monkeypatch,
     tmp_path: Path,

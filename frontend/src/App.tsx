@@ -138,6 +138,8 @@ type ReconciliationStreamEvent =
       type: "complete";
       repositories: number;
       artifacts: number;
+      changed_artifacts: number;
+      duration_ms: number;
       plan_status: "imported" | "current" | "conflict" | "unavailable" | "local_changes" | "local_ahead";
       plan_message: string;
       plan_revision: number;
@@ -145,6 +147,18 @@ type ReconciliationStreamEvent =
       plan_errors: Array<{ repository: string; message: string }>;
     }
   | { type: "error"; message: string };
+
+type ReconciliationResult = {
+  repositories: number;
+  artifacts: number;
+  changed_artifacts: number;
+  duration_ms: number;
+  plan_status: "imported" | "current" | "conflict" | "unavailable" | "local_changes" | "local_ahead";
+  plan_message: string;
+  plan_revision: number;
+  plan_source_branch: string;
+  plan_errors: Array<{ repository: string; message: string }>;
+};
 
 let projectTransitionTimeout: number | undefined;
 
@@ -219,6 +233,9 @@ function App() {
   const [reconciling, setReconciling] = useState(false);
   const [reconciliationProgress, setReconciliationProgress] =
     useState<ReconciliationProgress | null>(null);
+  const dashboardRef = useRef<Dashboard | null>(null);
+  const activeProjectIdRef = useRef(route.projectId);
+  const reconciliationInFlight = useRef(new Map<string, Promise<void>>());
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [importProjectOpen, setImportProjectOpen] = useState(false);
   const [repositoryOpen, setRepositoryOpen] = useState(false);
@@ -227,6 +244,8 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.localStorage.getItem("stateforge-dpt:sidebar-collapsed") === "true",
   );
+  dashboardRef.current = dashboard;
+  activeProjectIdRef.current = route.projectId;
 
   useEffect(() => {
     if (!notice) return;
@@ -240,6 +259,11 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [error, session]);
 
+  useEffect(() => {
+    setReconciling(false);
+    setReconciliationProgress(null);
+  }, [route.projectId]);
+
   const loadProjects = useCallback(async () => {
     const values = await api<Project[]>("/api/projects");
     setProjects(values);
@@ -247,6 +271,7 @@ function App() {
 
   const loadDashboard = useCallback(async (projectId: string) => {
     const value = await api<Dashboard>(`/api/projects/${projectId}`);
+    if (activeProjectIdRef.current !== projectId) return;
     setDashboard(value);
     setSelectedStep((current) =>
       current
@@ -302,17 +327,16 @@ function App() {
 
   useEffect(() => {
     if (
-      route.page !== "overview"
-      || !route.projectId
+      !route.projectId
       || !session?.authenticated
     ) return;
 
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void loadDashboard(route.projectId!).catch(() => undefined);
-    }, hasActiveCiRun ? 10_000 : 60_000);
+    }, hasActiveCiRun ? 10_000 : 30_000);
     return () => window.clearInterval(interval);
-  }, [hasActiveCiRun, loadDashboard, route.page, route.projectId, session?.authenticated]);
+  }, [hasActiveCiRun, loadDashboard, route.projectId, session?.authenticated]);
 
   useEffect(() => {
     if (route.page !== "activity" || !route.projectId) return;
@@ -325,99 +349,110 @@ function App() {
     setError(caught instanceof Error ? caught.message : "The operation failed");
   }
 
-  async function reconcile() {
-    if (!route.projectId || reconciling) return;
+  const reconcile = useCallback((): Promise<void> => {
+    const projectId = route.projectId;
+    if (!projectId) return Promise.resolve();
     if (!session?.authenticated) {
-      navigate(`/projects/${route.projectId}/connect-github`);
-      return;
+      navigate(`/projects/${projectId}/connect-github`);
+      return Promise.resolve();
     }
-    setReconciling(true);
-    setReconciliationProgress({
-      phase: "starting",
-      title: "Preparing reconciliation",
-      detail:
-        "Preparing the parent-branch plan check and authenticated GitHub requests.",
-      repository: null,
-      repository_index: 0,
-      repository_count: dashboard?.repositories.length || 0,
-      artifacts: 0,
-    });
-    setNotice(null);
-    const minimumProgressDisplay = new Promise<void>((resolve) => {
-      window.setTimeout(resolve, 750);
-    });
-    try {
-      const result = {
-        repositories: 0,
-        artifacts: 0,
-        complete: false,
-        planStatus: "current",
-        planMessage: "Plan is current",
-        planRevision: dashboard?.project.revision || 0,
-        planSourceBranch: dashboard?.project.plan_source_branch || "",
-        planErrors: [] as Array<{ repository: string; message: string }>,
-      };
-      await apiStream<ReconciliationStreamEvent>(
-        `/api/projects/${route.projectId}/reconcile/stream`,
-        (event) => {
-          if (event.type === "progress") {
-            setReconciliationProgress({
-              phase: event.phase,
-              title: event.title,
-              detail: event.detail,
-              repository: event.repository,
-              repository_index: event.repository_index,
-              repository_count: event.repository_count,
-              artifacts: event.artifacts,
-            });
-          } else if (event.type === "complete") {
-            result.repositories = event.repositories;
-            result.artifacts = event.artifacts;
-            result.planStatus = event.plan_status;
-            result.planMessage = event.plan_message;
-            result.planRevision = event.plan_revision;
-            result.planSourceBranch = event.plan_source_branch;
-            result.planErrors = event.plan_errors;
-            result.complete = true;
-          } else {
-            throw new Error(event.message);
-          }
-        },
-        { method: "POST" },
-      );
-      if (!result.complete) {
-        throw new Error("Reconciliation ended without a result");
-      }
+    const existing = reconciliationInFlight.current.get(projectId);
+    if (existing) return existing;
+
+    const task = (async () => {
+      setReconciling(true);
       setReconciliationProgress({
-        phase: "updating",
-        title: "Updating this page",
+        phase: "starting",
+        title: "Preparing reconciliation",
         detail:
-          "Loading the rebuilt milestone states and reconciliation findings from DPT.",
+          "Preparing the parent-branch plan check and authenticated GitHub requests.",
         repository: null,
-        repository_index: result.repositories,
-        repository_count: result.repositories,
-        artifacts: result.artifacts,
+        repository_index: 0,
+        repository_count: dashboardRef.current?.repositories.length || 0,
+        artifacts: 0,
       });
-      await loadDashboard(route.projectId);
-      await minimumProgressDisplay;
-      const planNotice = result.planStatus === "imported"
-        ? `Imported plan revision ${result.planRevision} from ${result.planSourceBranch}. `
-        : result.planStatus === "conflict"
-          ? "Plan conflict needs review in the Plan editor. "
-          : "";
-      const sourceWarning = result.planErrors.length
-        ? ` ${result.planErrors.length} plan source ${result.planErrors.length === 1 ? "warning" : "warnings"}.`
-        : "";
-      setNotice(`${planNotice}Reconciled ${result.artifacts} artifacts across ${result.repositories} repositories.${sourceWarning}`);
-    } catch (caught) {
-      await minimumProgressDisplay;
       setNotice(null);
-      showError(caught);
-    } finally {
-      setReconciling(false);
-      setReconciliationProgress(null);
-    }
-  }
+      const minimumProgressDisplay = new Promise<void>((resolve) =>
+        window.setTimeout(resolve, 750)
+      );
+      try {
+        let streamedResult: ReconciliationResult | null = null;
+        await apiStream<ReconciliationStreamEvent>(
+          `/api/projects/${projectId}/reconcile/stream`,
+          (event) => {
+            if (event.type === "progress") {
+              if (activeProjectIdRef.current === projectId) {
+                setReconciliationProgress({
+                  phase: event.phase,
+                  title: event.title,
+                  detail: event.detail,
+                  repository: event.repository,
+                  repository_index: event.repository_index,
+                  repository_count: event.repository_count,
+                  artifacts: event.artifacts,
+                });
+              }
+            } else if (event.type === "complete") {
+              streamedResult = event;
+            } else {
+              throw new Error(event.message);
+            }
+          },
+          { method: "POST" },
+        );
+        if (!streamedResult) {
+          throw new Error("Reconciliation ended without a result");
+        }
+        const result = streamedResult as ReconciliationResult;
+        if (activeProjectIdRef.current === projectId) {
+          setReconciliationProgress({
+            phase: "updating",
+            title: "Updating this page",
+            detail:
+              "Loading the rebuilt milestone states and reconciliation findings from DPT.",
+            repository: null,
+            repository_index: result.repositories,
+            repository_count: result.repositories,
+            artifacts: result.artifacts,
+          });
+          await loadDashboard(projectId);
+        }
+        await minimumProgressDisplay;
+        if (activeProjectIdRef.current === projectId) {
+          const planNotice = result.plan_status === "imported"
+            ? `Imported plan revision ${result.plan_revision} from ${result.plan_source_branch}. `
+            : result.plan_status === "conflict"
+              ? "Plan conflict needs review in the Plan editor. "
+              : "";
+          const sourceWarning = result.plan_errors.length
+            ? ` ${result.plan_errors.length} plan source ${result.plan_errors.length === 1 ? "warning" : "warnings"}.`
+            : "";
+          const duration = result.duration_ms < 1_000
+            ? `${result.duration_ms} ms`
+            : `${(result.duration_ms / 1_000).toFixed(1)} s`;
+          setNotice(`${planNotice}Synced ${result.artifacts} artifacts across ${result.repositories} repositories; ${result.changed_artifacts} changed in ${duration}.${sourceWarning}`);
+        }
+      } catch (caught) {
+        await minimumProgressDisplay;
+        if (activeProjectIdRef.current === projectId) {
+          setNotice(null);
+          setError(caught instanceof Error ? caught.message : "Reconciliation failed");
+        }
+      } finally {
+        if (activeProjectIdRef.current === projectId) {
+          setReconciling(false);
+          setReconciliationProgress(null);
+        }
+      }
+    })();
+    reconciliationInFlight.current.set(projectId, task);
+    void task.finally(() => {
+      if (reconciliationInFlight.current.get(projectId) === task) {
+        reconciliationInFlight.current.delete(projectId);
+      }
+    });
+    return task;
+  }, [loadDashboard, route.projectId, session?.authenticated]);
 
   async function generate() {
     if (!route.projectId) return false;
@@ -1399,7 +1434,8 @@ function Topbar({ project, session, onConnectGitHub, onReconcile, reconciling }:
         ) : (
           <button className="connection" onClick={onConnectGitHub} type="button"><i />Connect GitHub</button>
         )}
-        <button className="button button-secondary" disabled={reconciling} onClick={onReconcile}><RefreshCw className={reconciling ? "spin-icon" : undefined} />{reconciling ? "Reconciling…" : "Reconcile"}</button>
+        {profileUrl && <span className={`auto-sync-state${reconciling ? " active" : ""}`}><i />{reconciling ? "Updating" : "Auto-sync on"}</span>}
+        <button className="button button-secondary" disabled={reconciling} onClick={onReconcile} title="Automatic synchronization is active; click to refresh immediately"><RefreshCw className={reconciling ? "spin-icon" : undefined} />{reconciling ? "Syncing…" : "Sync now"}</button>
       </div>
     </header>
   );
@@ -1438,7 +1474,7 @@ function CurrentPage(props: {
 function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: { dashboard: Dashboard; onAddRepository: () => void; onOpenStep: (step: Step) => void; onReconcile: () => void }) {
   return (
     <>
-      <PageHeader eyebrow="Project overview" title={`${dashboard.project.name} ${dashboard.project.release}`} description="The canonical project plan and current GitHub delivery evidence." actions={<button className="button button-primary" onClick={onReconcile}><RefreshCw />Reconcile GitHub</button>} />
+      <PageHeader eyebrow="Project overview" title={`${dashboard.project.name} ${dashboard.project.release}`} description="The canonical project plan and current GitHub delivery evidence, kept current automatically." actions={<button className="button button-primary" onClick={onReconcile}><RefreshCw />Sync now</button>} />
       <RepositoryCiStrip repositories={dashboard.repositories} onAddRepository={onAddRepository} />
       <ProjectStatusDashboard dashboard={dashboard} onOpenStep={onOpenStep} />
     </>
@@ -2065,7 +2101,7 @@ function ReconciliationPage({ dashboard, onOpenStep, onReconcile, progress, reco
       eyebrow="Plan and evidence"
       title="Reconciliation"
       description={`Fetch the portable plan from origin/${dashboard.project.plan_source_branch}, update the local working copy safely, then validate GitHub delivery evidence.`}
-      actions={<button className="button button-primary" disabled={!session?.authenticated || reconciling} onClick={onReconcile}><RefreshCw className={reconciling ? "spin-icon" : undefined} />{reconciling ? "Reconciling…" : "Reconcile now"}</button>}
+      actions={<button className="button button-primary" disabled={!session?.authenticated || reconciling} onClick={onReconcile}><RefreshCw className={reconciling ? "spin-icon" : undefined} />{reconciling ? "Syncing…" : "Sync now"}</button>}
     />
     {reconciling && (
       <section aria-live="polite" className="reconcile-progress" role="status">

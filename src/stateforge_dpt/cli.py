@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from dataclasses import replace
 from pathlib import Path
 
@@ -149,16 +150,21 @@ def main() -> None:
         settings = replace(settings, mcp_enabled=False)
     from stateforge_dpt.app import create_app
 
-    application = create_app(settings)
-    print_startup_banner(settings)
-    uvicorn.run(
-        application,
-        host=settings.host,
-        port=settings.port,
-        reload=False,
-        log_level="warning",
-        access_log=False,
-    )
+    previous_logging_threshold = logging.root.manager.disable
+    logging.disable(logging.WARNING)
+    try:
+        application = create_app(settings)
+        print_startup_banner(settings)
+        uvicorn.run(
+            application,
+            host=settings.host,
+            port=settings.port,
+            reload=False,
+            log_level="error",
+            access_log=False,
+        )
+    finally:
+        logging.disable(previous_logging_threshold)
 
 
 if __name__ == "__main__":

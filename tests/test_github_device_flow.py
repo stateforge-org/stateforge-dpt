@@ -1,11 +1,16 @@
+import asyncio
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 from fastapi.testclient import TestClient
 
-from stateforge_dpt.app import create_app
+from stateforge_dpt.app import SESSION_COOKIE, create_app
 from stateforge_dpt.config import DEFAULT_GITHUB_CLIENT_ID, Settings, load_settings
 from stateforge_dpt.github import (
+    ArtifactDelta,
     DeviceAuthorization,
     DevicePollResult,
     GitHubClient,
@@ -21,6 +26,261 @@ def settings(tmp_path: Path) -> Settings:
         frontend_dir=tmp_path / "frontend",
         github_client_id=DEFAULT_GITHUB_CLIENT_ID,
     )
+
+
+def test_concurrent_reconciliation_requests_share_one_github_refresh(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    async def start_device_authorization(
+        _client: GitHubClient,
+    ) -> DeviceAuthorization:
+        return DeviceAuthorization(
+            device_code="private-device-code",
+            user_code="ABCD-1234",
+            verification_uri="https://github.com/login/device",
+            expires_in=900,
+            interval=0,
+        )
+
+    async def poll_device_authorization(
+        _client: GitHubClient,
+        _device_code: str,
+    ) -> DevicePollResult:
+        return DevicePollResult(
+            "complete",
+            GitHubIdentity(
+                user_id=42,
+                login="octocat",
+                name="The Octocat",
+                avatar_url=None,
+                access_token="access-token",
+                refresh_token=None,
+                expires_in=None,
+                refresh_token_expires_in=None,
+            ),
+        )
+
+    async def repository_artifact_delta(
+        _client: GitHubClient,
+        _access_token: str,
+        _full_name: str,
+        _project_slug: str,
+        _cached_updated_at: dict[int, str],
+        **_kwargs,
+    ) -> ArtifactDelta:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.15)
+        return ArtifactDelta([], [], 0)
+
+    monkeypatch.setattr(
+        GitHubClient,
+        "start_device_authorization",
+        start_device_authorization,
+    )
+    monkeypatch.setattr(
+        GitHubClient,
+        "poll_device_authorization",
+        poll_device_authorization,
+    )
+    monkeypatch.setattr(
+        GitHubClient,
+        "repository_artifact_delta",
+        repository_artifact_delta,
+    )
+
+    with TestClient(create_app(settings(tmp_path))) as client:
+        authorization = client.post("/api/auth/github/device").json()
+        client.post(f"/api/auth/github/device/{authorization['authorization_id']}/poll")
+        project = client.post(
+            "/api/projects",
+            json={"name": "StateForge", "slug": "stateforge", "release": "MVP"},
+        ).json()
+        client.post(
+            f"/api/projects/{project['project_id']}/repositories",
+            json={
+                "alias": "protocol",
+                "github_full_name": "stateforge-org/stateforge-protocol",
+                "github_default_branch": "main",
+            },
+        )
+        start = Barrier(3)
+
+        def reconcile() -> object:
+            start.wait()
+            return client.post(f"/api/projects/{project['project_id']}/reconcile")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(reconcile)
+            second = executor.submit(reconcile)
+            start.wait()
+            responses = [first.result(), second.result()]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert calls == 1
+
+
+def test_server_reconciles_authenticated_projects_without_a_browser_trigger(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    async def repository_artifact_delta(
+        _client: GitHubClient,
+        _access_token: str,
+        _full_name: str,
+        _project_slug: str,
+        _cached_updated_at: dict[int, str],
+        **_kwargs,
+    ) -> ArtifactDelta:
+        nonlocal calls
+        calls += 1
+        return ArtifactDelta([], [], 0)
+
+    monkeypatch.setattr(
+        GitHubClient,
+        "repository_artifact_delta",
+        repository_artifact_delta,
+    )
+    resolved = Settings(
+        host="127.0.0.1",
+        port=8463,
+        data_dir=tmp_path / "data",
+        frontend_dir=tmp_path / "frontend",
+        github_client_id=DEFAULT_GITHUB_CLIENT_ID,
+        auto_reconcile_enabled=True,
+        auto_reconcile_active_seconds=0.05,
+        auto_reconcile_idle_seconds=0.05,
+    )
+    app = create_app(resolved)
+
+    with TestClient(app) as client:
+        token = app.state.service.create_session(
+            42,
+            "octocat",
+            "The Octocat",
+            None,
+            "access-token",
+            None,
+            None,
+            None,
+        )
+        client.cookies.set(SESSION_COOKIE, token)
+        project = client.post(
+            "/api/projects",
+            json={"name": "StateForge", "slug": "stateforge", "release": "MVP"},
+        ).json()
+        client.post(
+            f"/api/projects/{project['project_id']}/repositories",
+            json={
+                "alias": "protocol",
+                "github_full_name": "stateforge-org/stateforge-protocol",
+                "github_default_branch": "main",
+            },
+        )
+
+        assert client.get("/api/session").status_code == 200
+        deadline = time.monotonic() + 2.0
+        while calls == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert calls >= 1
+
+
+def test_reconciliation_checks_issue_dependencies_concurrently(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    active = 0
+    maximum_active = 0
+
+    async def repository_artifact_delta(
+        _client: GitHubClient,
+        _access_token: str,
+        _full_name: str,
+        _project_slug: str,
+        _cached_updated_at: dict[int, str],
+        **_kwargs,
+    ) -> ArtifactDelta:
+        issues = [
+            {
+                "id": 100 + number,
+                "number": number,
+                "title": f"Milestone {number}",
+                "state": "open",
+                "html_url": f"https://github.com/example/issues/{number}",
+                "labels": [{"name": f"dpt:step:P{number}"}],
+                "updated_at": "2026-10-19T10:00:00Z",
+            }
+            for number in range(1, 4)
+        ]
+        return ArtifactDelta(issues, issues, 0)
+
+    async def issue_dependencies(
+        _client: GitHubClient,
+        _access_token: str,
+        _full_name: str,
+        _issue_number: int,
+        **_kwargs,
+    ) -> list[dict[str, object]]:
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return []
+
+    monkeypatch.setattr(
+        GitHubClient,
+        "repository_artifact_delta",
+        repository_artifact_delta,
+    )
+    monkeypatch.setattr(GitHubClient, "issue_dependencies", issue_dependencies)
+    app = create_app(settings(tmp_path))
+
+    with TestClient(app) as client:
+        token = app.state.service.create_session(
+            42,
+            "octocat",
+            "The Octocat",
+            None,
+            "access-token",
+            None,
+            None,
+            None,
+        )
+        client.cookies.set(SESSION_COOKIE, token)
+        project = client.post(
+            "/api/projects",
+            json={"name": "StateForge", "slug": "stateforge", "release": "MVP"},
+        ).json()
+        repository = client.post(
+            f"/api/projects/{project['project_id']}/repositories",
+            json={
+                "alias": "protocol",
+                "github_full_name": "stateforge-org/stateforge-protocol",
+            },
+        ).json()
+        for number in range(1, 4):
+            client.post(
+                f"/api/projects/{project['project_id']}/steps",
+                json={
+                    "step_id": f"P{number}",
+                    "repository_id": repository["repository_id"],
+                    "title": f"Milestone {number}",
+                    "required_result": "The milestone is complete.",
+                    "branch_name": f"mvp/p{number}",
+                },
+            )
+
+        response = client.post(f"/api/projects/{project['project_id']}/reconcile")
+
+    assert response.status_code == 200
+    assert maximum_active == 3
 
 
 def test_blank_environment_value_uses_stateforge_client_id(
@@ -137,25 +397,26 @@ def test_milestone_pull_request_uses_selected_github_branches(
             ),
         )
 
-    async def repository_artifacts(
+    async def repository_artifact_delta(
         _client: GitHubClient,
         _access_token: str,
         _full_name: str,
         _project_slug: str,
-    ) -> list[dict[str, object]]:
-        return [
-            {
-                "id": 101,
-                "number": 3,
-                "title": "Define Provider Manifest Exchange Contract",
-                "body": "Define the manifest contract.",
-                "state": "open",
-                "html_url": "https://github.com/example/issues/3",
-                "user": {"login": "octocat"},
-                "labels": [{"name": "dpt:step:P1"}],
-                "updated_at": "2026-09-14T10:00:00Z",
-            }
-        ]
+        _cached_updated_at: dict[int, str],
+        **_kwargs,
+    ) -> ArtifactDelta:
+        issue = {
+            "id": 101,
+            "number": 3,
+            "title": "Define Provider Manifest Exchange Contract",
+            "body": "Define the manifest contract.",
+            "state": "open",
+            "html_url": "https://github.com/example/issues/3",
+            "user": {"login": "octocat"},
+            "labels": [{"name": "dpt:step:P1"}],
+            "updated_at": "2026-09-14T10:00:00Z",
+        }
+        return ArtifactDelta([issue], [issue], 0)
 
     async def repository_branches(
         _client: GitHubClient,
@@ -169,6 +430,7 @@ def test_milestone_pull_request_uses_selected_github_branches(
         _access_token: str,
         _full_name: str,
         _issue_number: int,
+        **_kwargs,
     ) -> list[dict[str, object]]:
         return []
 
@@ -236,8 +498,8 @@ def test_milestone_pull_request_uses_selected_github_branches(
     )
     monkeypatch.setattr(
         GitHubClient,
-        "repository_artifacts",
-        repository_artifacts,
+        "repository_artifact_delta",
+        repository_artifact_delta,
     )
     monkeypatch.setattr(
         GitHubClient,

@@ -71,6 +71,7 @@ function dashboardFixture() {
       { repository_id: "protocol", alias: "protocol", total: 1, completed: 1, in_review: 0, ready: 0, pending: 0, blocked: 0, planned: 0, cancelled: 0 },
       { repository_id: "provider", alias: "provider", total: 3, completed: 0, in_review: 1, ready: 0, pending: 0, blocked: 2, planned: 0, cancelled: 0 },
       { repository_id: "agent", alias: "agent", total: 1, completed: 0, in_review: 0, ready: 0, pending: 0, blocked: 1, planned: 0, cancelled: 0 },
+      { repository_id: "control-plane", alias: "control-plane", total: 0, completed: 0, in_review: 0, ready: 0, pending: 0, blocked: 0, planned: 0, cancelled: 0 },
     ],
     history: [
       { snapshot_id: 1, plan_revision: 7, source: "reconciliation", recorded_at: "2026-10-01T10:00:00Z", metrics: { ...metrics, completed: 0 }, repository_metrics: [] },
@@ -89,12 +90,20 @@ test("derives the active critical path and blocker blast radius", () => {
   });
 });
 
-test("renders trusted history, repository progress, and clickable path nodes", () => {
+test("renders milestone graph, repository progress, tooltips, and clickable path nodes", () => {
   const dashboard = dashboardFixture();
   const html = renderToStaticMarkup(createElement(ProjectStatusDashboard, { dashboard, onOpenStep() {} }));
-  assert.match(html, /Progress versus release scope/);
-  assert.match(html, /Each successful GitHub reconciliation adds a trusted observation/);
+  assert.match(html, /Milestones by repository/);
+  assert.match(html, /Each line shows the current milestone count for one delivery state/);
+  assert.match(html, /Hover or focus to inspect · click to pin/);
+  assert.equal((html.match(/class="status-milestone-observation(?: selected)?"/g) || []).length, 4);
+  assert.match(html, /protocol: 1 total milestone, 1 complete, 0 in review, 0 ready, 0 pending, 0 blocked/);
+  assert.match(html, /provider: 3 total milestones, 0 complete, 1 in review, 0 ready, 0 pending, 2 blocked/);
+  assert.match(html, /control-plane: no milestones/);
   assert.match(html, /Progress by repository/);
+  assert.match(html, /provider: 2 blocked, 67%/);
+  assert.equal((html.match(/status-repository-cell /g) || []).length, 5);
+  assert.match(html, /Release: 3 blocked, 60%/);
   assert.match(html, /The shortest route through the remaining work/);
   assert.equal((html.match(/status-critical-node /g) || []).length, 4);
   assert.match(html, /1 directly blocked · 2 indirectly delayed/);

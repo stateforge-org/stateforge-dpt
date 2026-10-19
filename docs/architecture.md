@@ -67,6 +67,27 @@ when the SQLite plan has no unpublished edits; otherwise it is presented as a
 conflict. This allows plan changes merged by another computer to appear locally
 while the developer remains on any feature branch.
 
+After GitHub authentication, the server keeps every project reconciled even
+when no browser tab is open. Its cadence adapts to project activity: delivery
+work is checked more frequently, quiet projects use a slower interval, and
+repeated failures back off exponentially. The browser polls the inexpensive
+local dashboard projection and offers **Sync now** as an immediate override.
+Automatic, manual, and multi-tab triggers share one in-flight backend task per
+project. Repository GitHub requests use bounded asynchronous concurrency and
+conditional ETags, while blocking Git and context inspection run in bounded
+worker threads. This keeps the interface current without multiplying API
+traffic or blocking the event loop.
+
+The normal reconciliation path is incremental. DPT lists the current labelled
+issue and pull-request index, compares GitHub IDs and `updated_at` values with
+SQLite, and hydrates conversations, reviews, files, and PR state only for new or
+changed artifacts. Open pull requests are always refreshed because commit checks
+can settle without changing PR metadata. Blocked-by relationships are checked
+concurrently over one shared HTTP connection pool, and unchanged evidence stays
+in SQLite. A periodic full hydration audit guards against upstream events that
+do not advance issue timestamps. Remote plan files are fetched from attached
+clones concurrently in bounded worker threads.
+
 GitHub supplies observed execution evidence. Stable labels bind an issue or
 pull request to a DPT step:
 

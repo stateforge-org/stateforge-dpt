@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import hashlib
+import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import quote
@@ -58,6 +63,15 @@ class RefreshedToken:
     refresh_token_expires_in: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactDelta:
+    """Lightweight repository index plus the artifacts that need rehydration."""
+
+    listed_items: list[dict[str, Any]]
+    changed_artifacts: list[dict[str, Any]]
+    unchanged: int
+
+
 class GitHubClient:
     """Small typed boundary around the GitHub REST API."""
 
@@ -66,6 +80,9 @@ class GitHubClient:
     def __init__(self, settings: Settings) -> None:
         """Create a GitHub client using the StateForge GitHub App."""
         self.settings = settings
+        self._get_cache: OrderedDict[tuple[str, str, str], tuple[str, Any]] = (
+            OrderedDict()
+        )
 
     async def start_device_authorization(self) -> DeviceAuthorization:
         """Request a verification code for the GitHub App device flow."""
@@ -176,41 +193,109 @@ class GitHubClient:
         project_slug: str,
     ) -> list[dict[str, Any]]:
         """Load DPT-labelled issues and pull requests for a repository."""
-        artifacts: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(timeout=30) as client:
-            for page in range(1, 11):
-                items = await self._request(
+        delta = await self.repository_artifact_delta(
+            access_token,
+            full_name,
+            project_slug,
+            {},
+            force_full=True,
+        )
+        return delta.changed_artifacts
+
+    async def repository_artifact_delta(
+        self,
+        access_token: str,
+        full_name: str,
+        project_slug: str,
+        cached_updated_at: dict[int, str],
+        *,
+        force_full: bool = False,
+        client: httpx.AsyncClient | None = None,
+        hydration_limit: asyncio.Semaphore | None = None,
+    ) -> ArtifactDelta:
+        """Hydrate only new or changed artifacts from a lightweight issue index."""
+        if client is None:
+            async with httpx.AsyncClient(timeout=30) as owned_client:
+                return await self.repository_artifact_delta(
+                    access_token,
+                    full_name,
+                    project_slug,
+                    cached_updated_at,
+                    force_full=force_full,
+                    client=owned_client,
+                    hydration_limit=hydration_limit,
+                )
+
+        listed_items: list[dict[str, Any]] = []
+        limit = hydration_limit or asyncio.Semaphore(6)
+
+        async def hydrate(
+            item: dict[str, Any],
+        ) -> dict[str, Any]:
+            async with limit:
+                return await self._hydrate_issue(
                     client,
                     access_token,
-                    "GET",
-                    f"/repos/{full_name}/issues",
-                    params={
-                        "state": "all",
-                        "labels": f"dpt:project:{project_slug}",
-                        "per_page": 100,
-                        "page": page,
-                    },
+                    full_name,
+                    dict(item),
                 )
-                artifacts.extend(
-                    [
-                        await self._hydrate_issue(
-                            client, access_token, full_name, dict(item)
-                        )
-                        for item in items
-                    ]
-                )
-                if len(items) < 100:
-                    break
-        return artifacts
+
+        for page in range(1, 11):
+            items = await self._request(
+                client,
+                access_token,
+                "GET",
+                f"/repos/{full_name}/issues",
+                params={
+                    "state": "all",
+                    "labels": f"dpt:project:{project_slug}",
+                    "per_page": 100,
+                    "page": page,
+                },
+            )
+            listed_items.extend(dict(item) for item in items)
+            if len(items) < 100:
+                break
+
+        changed_items = [
+            item
+            for item in listed_items
+            if force_full
+            or cached_updated_at.get(int(item["id"]))
+            != str(item.get("updated_at") or "")
+            # Commit checks can settle without changing the PR's updated_at.
+            or ("pull_request" in item and item.get("state") == "open")
+        ]
+        changed_artifacts = list(
+            await asyncio.gather(*(hydrate(item) for item in changed_items))
+        )
+        return ArtifactDelta(
+            listed_items=listed_items,
+            changed_artifacts=changed_artifacts,
+            unchanged=len(listed_items) - len(changed_items),
+        )
 
     async def issue_artifact(
         self,
         access_token: str,
         full_name: str,
         issue_number: int,
+        *,
+        client: httpx.AsyncClient | None = None,
+        hydration_limit: asyncio.Semaphore | None = None,
     ) -> dict[str, Any]:
         """Load one issue and the same conversation data used by reconciliation."""
-        async with httpx.AsyncClient(timeout=30) as client:
+        if client is None:
+            async with httpx.AsyncClient(timeout=30) as owned_client:
+                return await self.issue_artifact(
+                    access_token,
+                    full_name,
+                    issue_number,
+                    client=owned_client,
+                    hydration_limit=hydration_limit,
+                )
+        limit = hydration_limit or asyncio.Semaphore(1)
+        async with limit:
             issue = await self._request(
                 client,
                 access_token,
@@ -226,14 +311,23 @@ class GitHubClient:
         access_token: str,
         full_name: str,
         issue_number: int,
+        *,
+        client: httpx.AsyncClient | None = None,
     ) -> list[dict[str, Any]]:
         """Return the native GitHub issues that block an issue."""
-        async with httpx.AsyncClient(timeout=30) as client:
-            return await self._paginated_items(
-                client,
-                access_token,
-                f"/repos/{full_name}/issues/{issue_number}/dependencies/blocked_by",
-            )
+        if client is None:
+            async with httpx.AsyncClient(timeout=30) as owned_client:
+                return await self.issue_dependencies(
+                    access_token,
+                    full_name,
+                    issue_number,
+                    client=owned_client,
+                )
+        return await self._paginated_items(
+            client,
+            access_token,
+            f"/repos/{full_name}/issues/{issue_number}/dependencies/blocked_by",
+        )
 
     async def add_issue_dependency(
         self,
@@ -280,7 +374,7 @@ class GitHubClient:
         item: dict[str, Any],
     ) -> dict[str, Any]:
         """Attach timeline, review, and pull-request details to an issue object."""
-        timeline = await self._paginated_items(
+        timeline_request = self._paginated_items(
             client,
             access_token,
             f"/repos/{full_name}/issues/{item['number']}/timeline",
@@ -289,21 +383,24 @@ class GitHubClient:
         changed_files: list[dict[str, Any]] = []
         checks_state: str | None = None
         if "pull_request" in item:
-            pull = await self._request(
-                client,
-                access_token,
-                "GET",
-                f"/repos/{full_name}/pulls/{item['number']}",
-            )
-            review_comments = await self._paginated_items(
-                client,
-                access_token,
-                f"/repos/{full_name}/pulls/{item['number']}/comments",
-            )
-            changed_files = await self._paginated_items(
-                client,
-                access_token,
-                f"/repos/{full_name}/pulls/{item['number']}/files",
+            timeline, pull, review_comments, changed_files = await asyncio.gather(
+                timeline_request,
+                self._request(
+                    client,
+                    access_token,
+                    "GET",
+                    f"/repos/{full_name}/pulls/{item['number']}",
+                ),
+                self._paginated_items(
+                    client,
+                    access_token,
+                    f"/repos/{full_name}/pulls/{item['number']}/comments",
+                ),
+                self._paginated_items(
+                    client,
+                    access_token,
+                    f"/repos/{full_name}/pulls/{item['number']}/files",
+                ),
             )
             head_sha = pull.get("head", {}).get("sha")
             if head_sha:
@@ -315,6 +412,8 @@ class GitHubClient:
                 )
                 checks_state = str(status.get("state") or "pending")
             item = {**item, "pull_details": pull}
+        else:
+            timeline = await timeline_request
         return {
             **item,
             "timeline": timeline,
@@ -552,16 +651,40 @@ class GitHubClient:
         path: str,
         **kwargs: Any,
     ) -> Any:
+        method = method.upper()
+        supplied_headers = kwargs.pop("headers", {})
+        request_headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {access_token}",
+            "X-GitHub-Api-Version": "2026-03-10",
+            **supplied_headers,
+        }
+        cache_key: tuple[str, str, str] | None = None
+        cached: tuple[str, Any] | None = None
+        if method == "GET":
+            cache_key = (
+                hashlib.sha256(access_token.encode()).hexdigest(),
+                path,
+                json.dumps(kwargs.get("params"), sort_keys=True, default=str),
+            )
+            cached = self._get_cache.get(cache_key)
+            if cached is not None:
+                request_headers["If-None-Match"] = cached[0]
         response = await client.request(
             method,
             f"{self.api_url}{path}",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {access_token}",
-                "X-GitHub-Api-Version": "2026-03-10",
-            },
+            headers=request_headers,
             **kwargs,
         )
+        if response.status_code == 304 and cached is not None and cache_key is not None:
+            # Another concurrent request can advance the bounded LRU while this
+            # request is in flight. Restore the validated entry before touching
+            # its recency so an eviction cannot turn a valid 304 into KeyError.
+            self._get_cache[cache_key] = cached
+            self._get_cache.move_to_end(cache_key)
+            while len(self._get_cache) > 512:
+                self._get_cache.popitem(last=False)
+            return copy.deepcopy(cached[1])
         if response.status_code >= 400:
             try:
                 payload = response.json()
@@ -576,7 +699,14 @@ class GitHubClient:
             if validation_details:
                 message = f"{message} — {'; '.join(validation_details)}"
             raise GitHubError(f"GitHub returned {response.status_code}: {message}")
-        return response.json()
+        payload = response.json()
+        etag = response.headers.get("etag")
+        if cache_key is not None and etag:
+            self._get_cache[cache_key] = (etag, copy.deepcopy(payload))
+            self._get_cache.move_to_end(cache_key)
+            while len(self._get_cache) > 512:
+                self._get_cache.popitem(last=False)
+        return payload
 
     @staticmethod
     def _token_from_payload(payload: dict[str, Any]) -> RefreshedToken:
