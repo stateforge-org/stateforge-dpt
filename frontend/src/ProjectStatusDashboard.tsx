@@ -185,6 +185,12 @@ function RepositoryMilestoneMap({
   dashboard: Dashboard;
   onOpenStep: (step: Step) => void;
 }) {
+  const maximumMilestones = Math.max(
+    1,
+    ...dashboard.repository_metrics.map((repository) =>
+      dashboard.steps.filter((step) => step.repository_id === repository.repository_id).length,
+    ),
+  );
   return (
     <div className="status-repository-map" aria-label="Milestones by repository">
       {dashboard.repository_metrics.map((repository) => {
@@ -200,7 +206,7 @@ function RepositoryMilestoneMap({
               <strong>{repository.alias}</strong>
               <span>{repository.completed}/{repository.total} · {percent}%</span>
             </header>
-            <div className="status-repository-cells">
+            <div className="status-repository-cells" style={{ gridTemplateColumns: `repeat(${maximumMilestones}, minmax(0, 1fr))` }}>
               {milestones.map((step) => <RepositoryMilestoneCell key={step.step_id} onOpenStep={onOpenStep} step={step} />)}
               {!milestones.length && <span className="status-repository-cells-empty">No milestones</span>}
             </div>
