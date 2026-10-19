@@ -90,19 +90,18 @@ test("derives the active critical path and blocker blast radius", () => {
   });
 });
 
-test("renders repository readiness, milestone maps, tooltips, and clickable path nodes", () => {
+test("renders milestone graph, repository progress, tooltips, and clickable path nodes", () => {
   const dashboard = dashboardFixture();
   const html = renderToStaticMarkup(createElement(ProjectStatusDashboard, { dashboard, onOpenStep() {} }));
-  assert.match(html, /Repository readiness/);
-  assert.match(html, /40%/);
-  assert.match(html, /2 of 5 milestones ready or complete/);
-  assert.match(html, /Readiness includes complete, in-review, ready, and pending milestones/);
+  assert.match(html, /Milestones by repository/);
+  assert.match(html, /Each line shows the current milestone count for one delivery state/);
   assert.match(html, /Hover or focus to inspect · click to pin/);
-  assert.equal((html.match(/class="status-readiness-repository(?: selected)?"/g) || []).length, 4);
-  assert.match(html, /protocol: 100% ready, 1 of 1 milestones ready or complete/);
-  assert.match(html, /provider: 33% ready, 1 of 3 milestones ready or complete/);
-  assert.match(html, /control-plane: not planned/);
-  assert.match(html, /Not planned/);
+  assert.equal((html.match(/class="status-milestone-observation(?: selected)?"/g) || []).length, 4);
+  assert.match(html, /protocol: 1 total milestone, 1 complete, 0 in review, 0 ready, 0 pending, 0 blocked/);
+  assert.match(html, /provider: 3 total milestones, 0 complete, 1 in review, 0 ready, 0 pending, 2 blocked/);
+  assert.match(html, /control-plane: no milestones/);
+  assert.match(html, /Progress by repository/);
+  assert.match(html, /provider: 2 blocked, 67%/);
   assert.equal((html.match(/status-repository-cell /g) || []).length, 5);
   assert.match(html, /Release: 3 blocked, 60%/);
   assert.match(html, /The shortest route through the remaining work/);

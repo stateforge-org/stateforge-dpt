@@ -233,140 +233,170 @@ function ReleaseComposition({ dashboard, onOpenStep }: { dashboard: Dashboard; o
   );
 }
 
-const readinessStates: StepState[] = ["completed", "in_review", "ready", "pending"];
-
-function readinessCount(repository: RepositoryStatusMetrics): number {
-  return readinessStates.reduce((total, state) => total + (repository[state] || 0), 0);
-}
-
-function readinessPercent(repository: RepositoryStatusMetrics): number {
-  return repository.total ? Math.round((readinessCount(repository) / repository.total) * 100) : 0;
-}
-
-function RepositoryReadiness({ repositories }: { repositories: RepositoryStatusMetrics[] }) {
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [focusedId, setFocusedId] = useState<string | null>(null);
-  const [pinnedId, setPinnedId] = useState<string | null>(null);
-  const width = 920;
-  const height = 330;
-  const bounds = { left: 68, right: 884, top: 30, bottom: 266 };
-  const plotWidth = bounds.right - bounds.left;
-  const columnWidth = Math.min(82, Math.max(44, plotWidth / Math.max(1, repositories.length * 2.3)));
-  const x = (index: number) => repositories.length <= 1
+function RepositoryMilestoneGraph({ repositories }: { repositories: RepositoryStatusMetrics[] }) {
+  const width = 760;
+  const height = 300;
+  const bounds = { left: 52, right: 730, top: 24, bottom: 226 };
+  const seriesTotals = useMemo(
+    () => Object.fromEntries(
+      chartStateOrder.map((state) => [
+        state,
+        repositories.reduce((total, repository) => total + (repository[state] || 0), 0),
+      ]),
+    ) as Record<StepState, number>,
+    [repositories],
+  );
+  const populatedStates = chartStateOrder.filter((state) => seriesTotals[state] > 0);
+  const [visibleStates, setVisibleStates] = useState<Record<StepState, boolean>>(() =>
+    Object.fromEntries(chartStateOrder.map((state) => [state, true])) as Record<StepState, boolean>,
+  );
+  const [hoveredRepository, setHoveredRepository] = useState<number | null>(null);
+  const [pinnedRepository, setPinnedRepository] = useState<number | null>(null);
+  const activeRepository = pinnedRepository ?? hoveredRepository;
+  const maximum = Math.max(
+    1,
+    ...repositories.flatMap((repository) => chartStateOrder.map((state) => repository[state] || 0)),
+  );
+  const scaleMaximum = Math.max(4, Math.ceil(maximum / 4) * 4);
+  const xFor = (index: number) => repositories.length <= 1
     ? (bounds.left + bounds.right) / 2
-    : bounds.left + ((index + 0.5) / repositories.length) * plotWidth;
-  const y = (percent: number) => bounds.bottom - (percent / 100) * (bounds.bottom - bounds.top);
-  const activeId = pinnedId ?? focusedId ?? hoveredId;
-  const activeIndex = activeId === null
-    ? -1
-    : repositories.findIndex((repository) => repository.repository_id === activeId);
-  const activeRepository = activeIndex >= 0 ? repositories[activeIndex] : null;
-  const totalMilestones = repositories.reduce((total, repository) => total + repository.total, 0);
-  const readyMilestones = repositories.reduce((total, repository) => total + readinessCount(repository), 0);
-  const overallReadiness = totalMilestones ? Math.round((readyMilestones / totalMilestones) * 100) : 0;
-  const gridValues = [0, 25, 50, 75, 100];
+    : bounds.left + (index / (repositories.length - 1)) * (bounds.right - bounds.left);
+  const yFor = (value: number) => bounds.bottom - (value / scaleMaximum) * (bounds.bottom - bounds.top);
+  const gridValues = [0, 1, 2, 3, 4].map((position) => (position / 4) * scaleMaximum);
+  const pathFor = (state: StepState) => repositories
+    .map((repository, index) => `${index === 0 ? "M" : "L"}${xFor(index)},${yFor(repository[state] || 0)}`)
+    .join(" ");
+  const visiblePopulatedStates = populatedStates.filter((state) => visibleStates[state]);
+  const toggleState = (state: StepState) => {
+    if (!seriesTotals[state]) return;
+    setVisibleStates((current) => {
+      const remaining = populatedStates.filter((candidate) => current[candidate]).length;
+      if (current[state] && remaining === 1) return current;
+      return { ...current, [state]: !current[state] };
+    });
+  };
+  const toggleRepository = (index: number) => {
+    setPinnedRepository((current) => current === index ? null : index);
+  };
+  const activeMetrics = activeRepository === null ? null : repositories[activeRepository];
+  const repositoryLabel = (repository: RepositoryStatusMetrics) => {
+    if (!repository.total) return `${repository.alias}: no milestones`;
+    return `${repository.alias}: ${repository.total} total milestone${repository.total === 1 ? "" : "s"}, ${repository.completed} complete, ${repository.in_review} in review, ${repository.ready} ready, ${repository.pending} pending, ${repository.blocked} blocked, ${repository.planned} planned, ${repository.cancelled} cancelled`;
+  };
 
   return (
-    <article className="status-panel status-readiness-panel">
-      <header className="status-panel-header status-readiness-header">
-        <div><span>DELIVERY READINESS</span><h2>Repository readiness</h2></div>
-        <div className="status-readiness-overview">
-          <strong>{overallReadiness}%</strong>
-          <span>{readyMilestones} of {totalMilestones} milestones ready or complete</span>
+    <article className="status-panel status-milestone-graph-panel">
+      <header className="status-panel-header status-milestone-graph-header">
+        <div><span>MILESTONE DISTRIBUTION</span><h2>Milestones by repository</h2></div>
+        <div className="status-milestone-graph-legend" aria-label="Toggle milestone state lines">
+          {chartStateOrder.map((state) => (
+            <button
+              aria-pressed={visibleStates[state] && seriesTotals[state] > 0}
+              className={visibleStates[state] && seriesTotals[state] > 0 ? "active" : ""}
+              disabled={!seriesTotals[state]}
+              key={state}
+              onClick={() => toggleState(state)}
+              type="button"
+            >
+              <i className={`status-dot status-dot-${state}`} />{stateLabels[state]}
+            </button>
+          ))}
         </div>
       </header>
-      <div className="status-readiness-legend" aria-label="Milestone states">
-        {chartStateOrder.map((state) => (
-          <span key={state}><i className={`status-dot status-dot-${state}`} />{stateLabels[state]}</span>
-        ))}
-      </div>
-      <div className={`status-readiness-chart${activeRepository ? " is-exploring" : ""}`}>
-        <svg aria-label="Repository readiness percentage by milestone state" role="img" viewBox={`0 0 ${width} ${height}`}>
-          <g className="status-readiness-grid">
-            {gridValues.map((value) => (
-              <g key={value}>
-                <line x1={bounds.left} x2={bounds.right} y1={y(value)} y2={y(value)} />
-                <text x={bounds.left - 15} y={y(value) + 4} textAnchor="end">{value}%</text>
-              </g>
-            ))}
+      <div className={`status-milestone-graph${activeRepository === null ? "" : " is-exploring"}`}>
+        <svg aria-label="Milestone state counts by repository" role="img" viewBox={`0 0 ${width} ${height}`}>
+          <g className="status-milestone-graph-grid">
+            {gridValues.map((value) => {
+              const y = yFor(value);
+              return (
+                <g key={value}>
+                  <line x1={bounds.left} x2={bounds.right} y1={y} y2={y} />
+                  <text x={bounds.left - 13} y={y + 3} textAnchor="end">{value}</text>
+                </g>
+              );
+            })}
+            <text className="status-milestone-graph-axis-title" textAnchor="middle" transform={`translate(14 ${(bounds.top + bounds.bottom) / 2}) rotate(-90)`}>MILESTONES</text>
+            <text className="status-milestone-graph-axis-title" textAnchor="middle" x={(bounds.left + bounds.right) / 2} y={290}>REPOSITORIES</text>
           </g>
-          <text className="status-readiness-axis-title" textAnchor="middle" transform={`translate(18 ${(bounds.top + bounds.bottom) / 2}) rotate(-90)`}>READINESS</text>
+          {visiblePopulatedStates.map((state) => (
+            <path className={`status-milestone-line status-milestone-line-${state}`} d={pathFor(state)} key={state} />
+          ))}
+          {activeRepository !== null && (
+            <line className="status-milestone-crosshair" x1={xFor(activeRepository)} x2={xFor(activeRepository)} y1={bounds.top} y2={bounds.bottom} />
+          )}
           {repositories.map((repository, index) => {
-            const center = x(index);
-            const percent = readinessPercent(repository);
-            let cumulative = 0;
+            const x = xFor(index);
+            const selected = activeRepository === index;
             return (
               <g
-                aria-label={repository.total
-                  ? `${repository.alias}: ${percent}% ready, ${readinessCount(repository)} of ${repository.total} milestones ready or complete`
-                  : `${repository.alias}: not planned`}
-                aria-pressed={pinnedId === repository.repository_id}
-                className={`status-readiness-repository${activeId === repository.repository_id ? " selected" : ""}`}
+                aria-label={repositoryLabel(repository)}
+                className={`status-milestone-observation${selected ? " selected" : ""}`}
                 key={repository.repository_id}
-                onBlur={() => setFocusedId(null)}
-                onClick={() => setPinnedId((current) => current === repository.repository_id ? null : repository.repository_id)}
-                onFocus={() => setFocusedId(repository.repository_id)}
+                onBlur={() => setHoveredRepository(null)}
+                onClick={() => toggleRepository(index)}
+                onFocus={() => setHoveredRepository(index)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    setPinnedId((current) => current === repository.repository_id ? null : repository.repository_id);
+                    toggleRepository(index);
                   }
                 }}
-                onMouseEnter={() => setHoveredId(repository.repository_id)}
-                onMouseLeave={() => setHoveredId(null)}
+                onMouseEnter={() => setHoveredRepository(index)}
+                onMouseLeave={() => setHoveredRepository(null)}
                 role="button"
                 tabIndex={0}
               >
-                <rect className="status-readiness-hit-target" height={height - 8} width={Math.max(columnWidth + 42, 105)} x={center - Math.max(columnWidth + 42, 105) / 2} y="4" />
-                <rect className={`status-readiness-column${repository.total ? "" : " empty"}`} height={bounds.bottom - bounds.top} rx="9" width={columnWidth} x={center - columnWidth / 2} y={bounds.top} />
-                {repository.total && chartStateOrder.map((state) => {
-                  const value = repository[state] || 0;
-                  if (!value) return null;
-                  const start = (cumulative / repository.total) * 100;
-                  cumulative += value;
-                  const end = (cumulative / repository.total) * 100;
-                  return (
-                    <rect
-                      className={`status-readiness-segment status-readiness-segment-${state}`}
-                      height={Math.max(2, y(start) - y(end))}
-                      key={state}
-                      width={columnWidth}
-                      x={center - columnWidth / 2}
-                      y={y(end)}
-                    />
-                  );
-                })}
-                {repository.total ? <>
-                  <line className="status-readiness-marker" x1={center - columnWidth / 2 - 6} x2={center + columnWidth / 2 + 6} y1={y(percent)} y2={y(percent)} />
-                  <circle className="status-readiness-marker-dot" cx={center} cy={y(percent)} r="5" />
-                  <text className="status-readiness-value" textAnchor="middle" x={center} y={Math.max(bounds.top + 13, y(percent) - 12)}>{percent}% ready</text>
-                </> : (
-                  <text className="status-readiness-not-planned" textAnchor="middle" x={center} y={(bounds.top + bounds.bottom) / 2}>Not planned</text>
-                )}
-                <text className="status-readiness-repository-label" textAnchor="middle" x={center} y={bounds.bottom + 26}>{repository.alias}</text>
+                <rect className="status-milestone-hit-target" height={bounds.bottom - bounds.top + 44} width={Math.max(42, (bounds.right - bounds.left) / Math.max(repositories.length, 1))} x={x - Math.max(42, (bounds.right - bounds.left) / Math.max(repositories.length, 1)) / 2} y={bounds.top} />
+                {visiblePopulatedStates.map((state) => (
+                  <circle className={`status-milestone-point status-milestone-point-${state}`} cx={x} cy={yFor(repository[state] || 0)} key={state} r={selected ? 5.2 : 4} />
+                ))}
+                <text className="status-milestone-repository-label" textAnchor="middle" x={x} y={254}>{repository.alias}</text>
+                {!repository.total && <text className="status-milestone-empty-label" textAnchor="middle" x={x} y={269}>No milestones</text>}
               </g>
             );
           })}
         </svg>
-        {activeRepository && activeIndex >= 0 && (
+        {activeMetrics && activeRepository !== null && (
           <div
-            className={`status-readiness-inspector${pinnedId === activeRepository.repository_id ? " pinned" : ""}${x(activeIndex) > width * .68 ? " align-left" : ""}`}
-            style={{ left: `${(x(activeIndex) / width) * 100}%`, top: "12%" }}
+            className={`status-milestone-inspector${xFor(activeRepository) > width * .62 ? " align-left" : ""}${pinnedRepository === activeRepository ? " pinned" : ""}`}
+            style={{ left: `${(xFor(activeRepository) / width) * 100}%`, top: "13%" }}
           >
-            <small>{activeRepository.alias}{pinnedId === activeRepository.repository_id ? " · PINNED" : ""}</small>
-            {activeRepository.total ? <>
-              <strong>{readinessPercent(activeRepository)}% ready</strong>
-              <span>{readinessCount(activeRepository)} of {activeRepository.total} milestones ready or complete</span>
-              <div className="status-readiness-inspector-metrics">
-                {chartStateOrder.map((state) => (
-                  <span key={state}><i className={`status-dot status-dot-${state}`} /><span>{stateLabels[state]}</span><b>{activeRepository[state] || 0}</b></span>
-                ))}
-              </div>
-            </> : <strong>Not planned</strong>}
+            <small>{pinnedRepository === activeRepository ? "PINNED REPOSITORY" : "REPOSITORY"}</small>
+            <strong>{activeMetrics.alias}</strong>
+            <span>{activeMetrics.total} milestone{activeMetrics.total === 1 ? "" : "s"} in scope</span>
+            <div className="status-milestone-inspector-metrics">
+              {chartStateOrder.map((state) => (
+                <span key={state}><i className={`status-dot status-dot-${state}`} /><span>{stateLabels[state]}</span><b>{activeMetrics[state] || 0}</b></span>
+              ))}
+            </div>
           </div>
         )}
       </div>
-      <footer><span>Readiness includes complete, in-review, ready, and pending milestones.</span><span>Hover or focus to inspect · click to pin</span></footer>
+      <footer><span>Each line shows the current milestone count for one delivery state.</span><span>Hover or focus to inspect · click to pin</span></footer>
+    </article>
+  );
+}
+
+function RepositoryProgress({ repositories }: { repositories: RepositoryStatusMetrics[] }) {
+  return (
+    <article className="status-panel status-repositories-panel">
+      <header className="status-panel-header"><div><span>WORKSTREAMS</span><h2>Progress by repository</h2></div></header>
+      <div className="status-repository-list">
+        {repositories.map((repository) => {
+          const percent = repository.total ? Math.round((repository.completed / repository.total) * 100) : 0;
+          return (
+            <div className="status-repository-row" key={repository.repository_id}>
+              <header><strong>{repository.alias}</strong><span>{repository.completed}/{repository.total} · {percent}%</span></header>
+              <div className="status-repository-bar" role="group" aria-label={`${repository.alias}: ${repository.completed} of ${repository.total} milestones complete`}>
+                {repository.total ? chartStateOrder.map((state) => {
+                  const count = repository[state] || 0;
+                  return count ? <ProgressSegment context={repository.alias} count={count} key={state} state={state} total={repository.total} /> : null;
+                }) : <i className="status-repository-empty" />}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </article>
   );
 }
@@ -448,7 +478,8 @@ export function ProjectStatusDashboard({ dashboard, onOpenStep }: { dashboard: D
         <ReleaseComposition dashboard={dashboard} onOpenStep={onOpenStep} />
       </article>
       <section className="status-dashboard-grid">
-        <RepositoryReadiness repositories={dashboard.repository_metrics} />
+        <RepositoryMilestoneGraph repositories={dashboard.repository_metrics} />
+        <RepositoryProgress repositories={dashboard.repository_metrics} />
         <CriticalPath dashboard={dashboard} onOpenStep={onOpenStep} />
       </section>
       <FocusStrip dashboard={dashboard} onOpenStep={onOpenStep} />
