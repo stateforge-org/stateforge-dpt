@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatch
@@ -2646,12 +2647,12 @@ class DPTService:
         branch = str(project["plan_source_branch"])
         filename = str(project["generated_filename"])
         timestamp = utc_now()
-        snapshots: list[dict[str, Any]] = []
+        attached_repositories = [
+            repository for repository in repositories if repository.get("local_path")
+        ]
 
-        for repository in repositories:
+        def fetch_snapshot(repository: dict[str, Any]) -> dict[str, Any]:
             local_path = repository.get("local_path")
-            if not local_path:
-                continue
             plan_json: str | None = None
             revision: int | None = None
             fingerprint: str | None = None
@@ -2686,19 +2687,26 @@ class DPTService:
                 file_digest = hashlib.sha256(content.encode()).hexdigest()
             except (GitError, PlanFileError) as error:
                 error_message = str(error)
-            snapshots.append(
-                {
-                    "repository_id": repository["repository_id"],
-                    "project_id": project_id,
-                    "source_branch": branch,
-                    "plan_json": plan_json,
-                    "revision": revision,
-                    "fingerprint": fingerprint,
-                    "file_digest": file_digest,
-                    "error": error_message,
-                    "fetched_at": timestamp,
-                }
-            )
+            return {
+                "repository_id": repository["repository_id"],
+                "project_id": project_id,
+                "source_branch": branch,
+                "plan_json": plan_json,
+                "revision": revision,
+                "fingerprint": fingerprint,
+                "file_digest": file_digest,
+                "error": error_message,
+                "fetched_at": timestamp,
+            }
+
+        if attached_repositories:
+            with ThreadPoolExecutor(
+                max_workers=min(4, len(attached_repositories)),
+                thread_name_prefix="dpt-plan-fetch",
+            ) as executor:
+                snapshots = list(executor.map(fetch_snapshot, attached_repositories))
+        else:
+            snapshots = []
 
         with self.database.connect() as connection:
             connection.execute(
@@ -3358,6 +3366,87 @@ class DPTService:
                 f"Reconciled {len(artifacts)} GitHub artifacts",
                 {"repository_id": repository_id},
             )
+
+    def github_artifact_metadata(
+        self,
+        project_id: str,
+        repository_id: str,
+    ) -> dict[int, dict[str, Any]]:
+        """Return the lightweight cache index used by incremental reconciliation."""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT artifact_id, github_issue_id, number, kind, state,
+                    updated_at, labels
+                FROM github_artifacts
+                WHERE project_id = ? AND repository_id = ?
+                """,
+                (project_id, repository_id),
+            ).fetchall()
+        return {
+            int(row["github_issue_id"]): {
+                **_row_dict(row),
+                "labels": json.loads(row["labels"]),
+            }
+            for row in rows
+            if row["github_issue_id"] is not None
+        }
+
+    def reconcile_github_artifacts(
+        self,
+        project_id: str,
+        repository_id: str,
+        current_github_issue_ids: set[int],
+        changed_artifacts: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        """Apply an incremental GitHub snapshot and remove vanished evidence."""
+        timestamp = utc_now()
+        with self.database.connect() as connection:
+            existing_rows = connection.execute(
+                """
+                SELECT artifact_id, github_issue_id
+                FROM github_artifacts
+                WHERE project_id = ? AND repository_id = ?
+                """,
+                (project_id, repository_id),
+            ).fetchall()
+            stale_artifact_ids = [
+                str(row["artifact_id"])
+                for row in existing_rows
+                if row["github_issue_id"] is None
+                or int(row["github_issue_id"]) not in current_github_issue_ids
+            ]
+            connection.executemany(
+                "DELETE FROM github_artifacts WHERE artifact_id = ?",
+                ((artifact_id,) for artifact_id in stale_artifact_ids),
+            )
+            for item in changed_artifacts:
+                self._write_github_artifact(
+                    connection,
+                    project_id,
+                    repository_id,
+                    item,
+                    timestamp,
+                )
+            if stale_artifact_ids or changed_artifacts:
+                self._activity(
+                    connection,
+                    project_id,
+                    "github.reconciled",
+                    (
+                        f"Updated {len(changed_artifacts)} and removed "
+                        f"{len(stale_artifact_ids)} GitHub artifacts"
+                    ),
+                    {
+                        "repository_id": repository_id,
+                        "updated": len(changed_artifacts),
+                        "removed": len(stale_artifact_ids),
+                    },
+                )
+        return {
+            "updated": len(changed_artifacts),
+            "removed": len(stale_artifact_ids),
+        }
 
     def upsert_github_artifact(
         self,

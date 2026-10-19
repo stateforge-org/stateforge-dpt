@@ -22,7 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from stateforge_dpt.config import Settings, load_settings
 from stateforge_dpt.database import Database
 from stateforge_dpt.git import GitError
-from stateforge_dpt.github import GitHubClient, GitHubError
+from stateforge_dpt.github import ArtifactDelta, GitHubClient, GitHubError
 from stateforge_dpt.mcp_server import create_mcp_server
 from stateforge_dpt.models import (
     AttachCloneRequest,
@@ -102,7 +102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     proposals = PlanProposalService(database, service)
     github = GitHubClient(resolved)
     reconciliation_tasks: dict[str, asyncio.Task[dict[str, object]]] = {}
+    reconciliation_reporters: dict[str, set[ReconciliationReporter]] = {}
+    reconciliation_progress: dict[str, dict[str, object]] = {}
     reconciliation_completed_at: dict[str, float] = {}
+    reconciliation_full_at: dict[str, float] = {}
     reconciliation_failures: dict[str, int] = {}
     background_session_token: str | None = None
     reconciliation_wakeup: asyncio.Event | None = None
@@ -303,8 +306,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project_id: str,
         current: dict[str, object],
         report: ReconciliationReporter | None = None,
+        *,
+        force_full: bool = False,
     ) -> dict[str, object]:
         """Refresh GitHub evidence while optionally reporting real work."""
+        started_at = asyncio.get_running_loop().time()
         initial_project = service.project(project_id)
         initial_repositories = service.repositories(project_id)
         source_branch = str(initial_project["plan_source_branch"])
@@ -351,31 +357,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project = service.project(project_id)
         repositories = service.repositories(project_id)
         repository_count = len(repositories)
-        artifact_batches: dict[str, list[dict[str, Any]]] = {}
         repositories_by_name = {
             str(repository["github_full_name"]).casefold(): repository
             for repository in repositories
         }
+        cached_by_repository = {
+            str(repository["repository_id"]): await asyncio.to_thread(
+                service.github_artifact_metadata,
+                project_id,
+                str(repository["repository_id"]),
+            )
+            for repository in repositories
+        }
 
         fetch_limit = asyncio.Semaphore(4)
+        hydration_limit = asyncio.Semaphore(12)
         progress_lock = asyncio.Lock()
         artifacts_loaded = 0
 
         async def fetch_repository(
             index: int,
             repository: dict[str, Any],
-        ) -> tuple[str, list[dict[str, Any]]]:
+            github_http: httpx.AsyncClient,
+        ) -> tuple[str, Any]:
             nonlocal artifacts_loaded
             full_name = str(repository["github_full_name"])
+            repository_id = str(repository["repository_id"])
             if report:
                 await report(
                     {
                         "phase": "fetching",
                         "title": f"Checking {full_name}",
                         "detail": (
-                            "Requesting DPT-labelled issues and pull requests, then "
-                            "loading their conversations, reviews, and merge state "
-                            "from GitHub."
+                            "Comparing DPT-labelled issues and pull requests with "
+                            "the local cache. Only new or changed evidence is loaded "
+                            "in full."
                         ),
                         "repository": full_name,
                         "repository_index": index,
@@ -384,13 +400,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     }
                 )
             async with fetch_limit:
-                artifacts = await github.repository_artifacts(
+                delta = await github.repository_artifact_delta(
                     str(current["access_token"]),
                     full_name,
                     str(project["slug"]),
+                    {
+                        artifact_id: str(metadata["updated_at"])
+                        for artifact_id, metadata in cached_by_repository[
+                            repository_id
+                        ].items()
+                    },
+                    force_full=force_full,
+                    client=github_http,
+                    hydration_limit=hydration_limit,
                 )
             async with progress_lock:
-                artifacts_loaded += len(artifacts)
+                artifacts_loaded += len(delta.listed_items)
                 current_total = artifacts_loaded
             if report:
                 await report(
@@ -398,9 +423,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "phase": "caching",
                         "title": f"Saving evidence from {full_name}",
                         "detail": (
-                            f"Replacing the local cache with {len(artifacts)} current "
-                            "GitHub items so the roadmap uses the latest delivery "
-                            "state."
+                            f"Found {len(delta.listed_items)} current items; "
+                            f"{len(delta.changed_artifacts)} require an update and "
+                            f"{delta.unchanged} remain cached."
                         ),
                         "repository": full_name,
                         "repository_index": index,
@@ -408,95 +433,172 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "artifacts": current_total,
                     }
                 )
-            return str(repository["repository_id"]), artifacts
+            return repository_id, delta
 
-        fetched_batches = await asyncio.gather(
-            *(
-                fetch_repository(index, repository)
-                for index, repository in enumerate(repositories, start=1)
-            )
-        )
-        artifact_batches.update(fetched_batches)
-        total = sum(len(artifacts) for artifacts in artifact_batches.values())
-
-        dependency_records: list[dict[str, object]] = []
-        milestone_issues: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        for repository in repositories:
-            for artifact in artifact_batches.get(str(repository["repository_id"]), []):
-                labels = {
-                    str(label.get("name"))
-                    for label in artifact.get("labels", [])
-                    if isinstance(label, dict)
-                }
-                if "pull_request" not in artifact and any(
-                    label.startswith("dpt:step:") for label in labels
-                ):
-                    milestone_issues.append((repository, artifact))
-
-        if report:
-            await report(
-                {
-                    "phase": "dependencies",
-                    "title": "Resolving GitHub blockers",
-                    "detail": (
-                        f"Checking native blocked-by relationships for "
-                        f"{len(milestone_issues)} milestone issues. Blockers remain "
-                        "GitHub-owned and are not written into the portable plan."
-                    ),
-                    "repository": None,
-                    "repository_index": repository_count,
-                    "repository_count": repository_count,
-                    "artifacts": total,
-                }
-            )
-
-        for blocked_repository, milestone_issue in milestone_issues:
-            blocked_full_name = str(blocked_repository["github_full_name"])
-            blocking_issues = await github.issue_dependencies(
-                str(current["access_token"]),
-                blocked_full_name,
-                int(milestone_issue["number"]),
-            )
-            for blocking_issue in blocking_issues:
-                if "pull_request" in blocking_issue:
-                    continue
-                blocking_full_name = _github_full_name_from_api_url(
-                    blocking_issue.get("repository_url")
-                )
-                if blocking_full_name is None:
-                    continue
-                blocking_repository = repositories_by_name.get(
-                    blocking_full_name.casefold()
-                )
-                if blocking_repository is None:
-                    continue
-                blocking_repository_id = str(blocking_repository["repository_id"])
-                batch = artifact_batches[blocking_repository_id]
-                if not any(
-                    int(item["id"]) == int(blocking_issue["id"]) for item in batch
-                ):
-                    hydrated = await github.issue_artifact(
-                        str(current["access_token"]),
-                        blocking_full_name,
-                        int(blocking_issue["number"]),
+        async with httpx.AsyncClient(
+            timeout=30,
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=16),
+        ) as github_http:
+            fetched_deltas: dict[str, ArtifactDelta] = dict(
+                await asyncio.gather(
+                    *(
+                        fetch_repository(index, repository, github_http)
+                        for index, repository in enumerate(repositories, start=1)
                     )
-                    batch.append(hydrated)
-                    total += 1
-                dependency_records.append(
+                )
+            )
+
+            artifact_updates = {
+                repository_id: list(delta.changed_artifacts)
+                for repository_id, delta in fetched_deltas.items()
+            }
+            updated_ids_by_repository = {
+                repository_id: {int(item["id"]) for item in delta.changed_artifacts}
+                for repository_id, delta in fetched_deltas.items()
+            }
+            current_ids_by_repository = {
+                repository_id: {int(item["id"]) for item in delta.listed_items}
+                for repository_id, delta in fetched_deltas.items()
+            }
+
+            dependency_records: list[dict[str, object]] = []
+            milestone_issues: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for repository in repositories:
+                delta = fetched_deltas[str(repository["repository_id"])]
+                for artifact in delta.listed_items:
+                    labels = {
+                        str(label.get("name"))
+                        for label in artifact.get("labels", [])
+                        if isinstance(label, dict)
+                    }
+                    if "pull_request" not in artifact and any(
+                        label.startswith("dpt:step:") for label in labels
+                    ):
+                        milestone_issues.append((repository, artifact))
+
+            if report:
+                await report(
                     {
-                        "blocked_repository": blocked_full_name,
-                        "blocked_number": int(milestone_issue["number"]),
-                        "blocking_repository": blocking_full_name,
-                        "blocking_number": int(blocking_issue["number"]),
+                        "phase": "dependencies",
+                        "title": "Resolving GitHub blockers",
+                        "detail": (
+                            f"Checking native blocked-by relationships for "
+                            f"{len(milestone_issues)} milestone issues concurrently."
+                        ),
+                        "repository": None,
+                        "repository_index": repository_count,
+                        "repository_count": repository_count,
+                        "artifacts": artifacts_loaded,
                     }
                 )
 
+            dependency_limit = asyncio.Semaphore(10)
+
+            async def fetch_dependencies(
+                blocked_repository: dict[str, Any],
+                milestone_issue: dict[str, Any],
+            ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+                async with dependency_limit:
+                    blockers = await github.issue_dependencies(
+                        str(current["access_token"]),
+                        str(blocked_repository["github_full_name"]),
+                        int(milestone_issue["number"]),
+                        client=github_http,
+                    )
+                return blocked_repository, milestone_issue, blockers
+
+            dependency_batches = await asyncio.gather(
+                *(
+                    fetch_dependencies(blocked_repository, milestone_issue)
+                    for blocked_repository, milestone_issue in milestone_issues
+                )
+            )
+            blockers_to_hydrate: dict[
+                tuple[str, int], tuple[dict[str, Any], dict[str, Any]]
+            ] = {}
+            for (
+                blocked_repository,
+                milestone_issue,
+                blocking_issues,
+            ) in dependency_batches:
+                blocked_full_name = str(blocked_repository["github_full_name"])
+                for blocking_issue in blocking_issues:
+                    if "pull_request" in blocking_issue:
+                        continue
+                    blocking_full_name = _github_full_name_from_api_url(
+                        blocking_issue.get("repository_url")
+                    )
+                    if blocking_full_name is None:
+                        continue
+                    blocking_repository = repositories_by_name.get(
+                        blocking_full_name.casefold()
+                    )
+                    if blocking_repository is None:
+                        continue
+                    blocking_repository_id = str(blocking_repository["repository_id"])
+                    blocking_id = int(blocking_issue["id"])
+                    current_ids_by_repository[blocking_repository_id].add(blocking_id)
+                    cached = cached_by_repository[blocking_repository_id].get(
+                        blocking_id
+                    )
+                    if blocking_id not in updated_ids_by_repository[
+                        blocking_repository_id
+                    ] and (
+                        force_full
+                        or cached is None
+                        or str(cached["updated_at"])
+                        != str(blocking_issue.get("updated_at") or "")
+                    ):
+                        blockers_to_hydrate[(blocking_repository_id, blocking_id)] = (
+                            blocking_repository,
+                            blocking_issue,
+                        )
+                    dependency_records.append(
+                        {
+                            "blocked_repository": blocked_full_name,
+                            "blocked_number": int(milestone_issue["number"]),
+                            "blocking_repository": blocking_full_name,
+                            "blocking_number": int(blocking_issue["number"]),
+                        }
+                    )
+
+            async def hydrate_blocker(
+                repository_id: str,
+                repository: dict[str, Any],
+                issue: dict[str, Any],
+            ) -> tuple[str, dict[str, Any]]:
+                artifact = await github.issue_artifact(
+                    str(current["access_token"]),
+                    str(repository["github_full_name"]),
+                    int(issue["number"]),
+                    client=github_http,
+                    hydration_limit=hydration_limit,
+                )
+                return repository_id, artifact
+
+            hydrated_blockers = await asyncio.gather(
+                *(
+                    hydrate_blocker(repository_id, repository, issue)
+                    for (repository_id, _blocking_id), (
+                        repository,
+                        issue,
+                    ) in blockers_to_hydrate.items()
+                )
+            )
+            for repository_id, artifact in hydrated_blockers:
+                artifact_updates[repository_id].append(artifact)
+
+        changed_total = sum(len(items) for items in artifact_updates.values())
+        total = sum(len(items) for items in current_ids_by_repository.values())
+
         for repository in repositories:
+            repository_id = str(repository["repository_id"])
             await asyncio.to_thread(
-                service.record_github_artifacts,
+                service.reconcile_github_artifacts,
                 project_id,
-                str(repository["repository_id"]),
-                artifact_batches.get(str(repository["repository_id"]), []),
+                repository_id,
+                current_ids_by_repository[repository_id],
+                artifact_updates[repository_id],
             )
         await asyncio.to_thread(
             service.record_issue_dependencies,
@@ -556,6 +658,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "repositories": repository_count,
             "artifacts": total,
+            "changed_artifacts": changed_total,
+            "duration_ms": round(
+                (asyncio.get_running_loop().time() - started_at) * 1000
+            ),
             "plan_status": plan_result["status"],
             "plan_message": plan_result["message"],
             "plan_revision": plan_result["revision"],
@@ -567,12 +673,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project_id: str,
         current: dict[str, object],
         report: ReconciliationReporter | None = None,
+        *,
+        force_full: bool = False,
     ) -> dict[str, object]:
         """Share one in-flight reconciliation across tabs and refresh triggers."""
+        reporters = reconciliation_reporters.setdefault(project_id, set())
+        if report is not None:
+            reporters.add(report)
+
+        async def broadcast(event: dict[str, object]) -> None:
+            reconciliation_progress[project_id] = event
+            active_reporters = tuple(reconciliation_reporters.get(project_id, ()))
+            if active_reporters:
+                await asyncio.gather(
+                    *(reporter(event) for reporter in active_reporters),
+                    return_exceptions=True,
+                )
+
         task = reconciliation_tasks.get(project_id)
         if task is None:
             task = asyncio.create_task(
-                reconcile_github_evidence(project_id, current, report)
+                reconcile_github_evidence(
+                    project_id,
+                    current,
+                    broadcast,
+                    force_full=force_full,
+                )
             )
             reconciliation_tasks[project_id] = task
 
@@ -586,6 +712,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     reconciliation_completed_at[project_id] = (
                         asyncio.get_running_loop().time()
                     )
+                    if force_full:
+                        reconciliation_full_at[project_id] = (
+                            asyncio.get_running_loop().time()
+                        )
                     reconciliation_failures[project_id] = 0
                 else:
                     reconciliation_failures[project_id] = (
@@ -593,17 +723,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                 if reconciliation_wakeup is not None:
                     reconciliation_wakeup.set()
+                reconciliation_progress.pop(project_id, None)
+                reconciliation_reporters.pop(project_id, None)
 
             task.add_done_callback(finish)
         elif report:
+            latest = reconciliation_progress.get(project_id)
             await report(
-                {
+                latest
+                or {
                     "phase": "fetching",
-                    "title": "Using the active refresh",
+                    "title": "Joining the active refresh",
                     "detail": (
-                        "Another tab or automatic refresh already started this "
-                        "reconciliation. DPT is sharing that work instead of "
-                        "duplicating GitHub requests."
+                        "DPT is attaching this view to the reconciliation already "
+                        "in progress instead of duplicating GitHub requests."
                     ),
                     "repository": None,
                     "repository_index": 0,
@@ -611,7 +744,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "artifacts": 0,
                 }
             )
-        return await asyncio.shield(task)
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if report is not None:
+                active = reconciliation_reporters.get(project_id)
+                if active is not None:
+                    active.discard(report)
 
     def automatic_reconciliation_interval(dashboard: dict[str, Any]) -> float:
         """Choose a faster cadence while GitHub delivery work is in motion."""
@@ -633,10 +772,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def refresh_project(
             project_id: str,
             current: dict[str, object],
+            force_full: bool,
         ) -> None:
             async with project_limit:
                 try:
-                    await coordinated_reconciliation(project_id, current)
+                    await coordinated_reconciliation(
+                        project_id,
+                        current,
+                        force_full=force_full,
+                    )
                 except Exception as error:
                     LOGGER.error(
                         "Automatic reconciliation failed for project %s: %s",
@@ -664,7 +808,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             projects = await asyncio.to_thread(service.projects)
             now = asyncio.get_running_loop().time()
-            due_projects: list[str] = []
+            due_projects: list[tuple[str, bool]] = []
             next_due_in = resolved.auto_reconcile_idle_seconds
             for project in projects:
                 project_id = str(project["project_id"])
@@ -678,15 +822,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 elapsed = now - reconciliation_completed_at.get(project_id, 0.0)
                 remaining = interval - elapsed
                 if remaining <= 0:
-                    due_projects.append(project_id)
+                    last_full = reconciliation_full_at.setdefault(project_id, now)
+                    due_projects.append(
+                        (
+                            project_id,
+                            now - last_full >= resolved.auto_reconcile_full_seconds,
+                        )
+                    )
                 else:
                     next_due_in = min(next_due_in, remaining)
 
             if due_projects:
                 await asyncio.gather(
                     *(
-                        refresh_project(project_id, current)
-                        for project_id in due_projects
+                        refresh_project(project_id, current, force_full)
+                        for project_id, force_full in due_projects
                     )
                 )
                 continue

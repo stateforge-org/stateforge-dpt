@@ -138,6 +138,8 @@ type ReconciliationStreamEvent =
       type: "complete";
       repositories: number;
       artifacts: number;
+      changed_artifacts: number;
+      duration_ms: number;
       plan_status: "imported" | "current" | "conflict" | "unavailable" | "local_changes" | "local_ahead";
       plan_message: string;
       plan_revision: number;
@@ -149,6 +151,8 @@ type ReconciliationStreamEvent =
 type ReconciliationResult = {
   repositories: number;
   artifacts: number;
+  changed_artifacts: number;
+  duration_ms: number;
   plan_status: "imported" | "current" | "conflict" | "unavailable" | "local_changes" | "local_ahead";
   plan_message: string;
   plan_revision: number;
@@ -423,7 +427,10 @@ function App() {
           const sourceWarning = result.plan_errors.length
             ? ` ${result.plan_errors.length} plan source ${result.plan_errors.length === 1 ? "warning" : "warnings"}.`
             : "";
-          setNotice(`${planNotice}Reconciled ${result.artifacts} artifacts across ${result.repositories} repositories.${sourceWarning}`);
+          const duration = result.duration_ms < 1_000
+            ? `${result.duration_ms} ms`
+            : `${(result.duration_ms / 1_000).toFixed(1)} s`;
+          setNotice(`${planNotice}Synced ${result.artifacts} artifacts across ${result.repositories} repositories; ${result.changed_artifacts} changed in ${duration}.${sourceWarning}`);
         }
       } catch (caught) {
         await minimumProgressDisplay;

@@ -78,6 +78,16 @@ conditional ETags, while blocking Git and context inspection run in bounded
 worker threads. This keeps the interface current without multiplying API
 traffic or blocking the event loop.
 
+The normal reconciliation path is incremental. DPT lists the current labelled
+issue and pull-request index, compares GitHub IDs and `updated_at` values with
+SQLite, and hydrates conversations, reviews, files, and PR state only for new or
+changed artifacts. Open pull requests are always refreshed because commit checks
+can settle without changing PR metadata. Blocked-by relationships are checked
+concurrently over one shared HTTP connection pool, and unchanged evidence stays
+in SQLite. A periodic full hydration audit guards against upstream events that
+do not advance issue timestamps. Remote plan files are fetched from attached
+clones concurrently in bounded worker threads.
+
 GitHub supplies observed execution evidence. Stable labels bind an issue or
 pull request to a DPT step:
 

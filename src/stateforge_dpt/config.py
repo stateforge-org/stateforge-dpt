@@ -58,6 +58,7 @@ class Settings:
     auto_reconcile_enabled: bool = False
     auto_reconcile_active_seconds: float = 45.0
     auto_reconcile_idle_seconds: float = 120.0
+    auto_reconcile_full_seconds: float = 1_800.0
 
     @property
     def database_path(self) -> Path:
@@ -139,5 +140,9 @@ def load_settings(root: Path | None = None) -> Settings:
         auto_reconcile_idle_seconds=positive_float(
             "STATEFORGE_DPT_AUTO_RECONCILE_IDLE_SECONDS",
             120.0,
+        ),
+        auto_reconcile_full_seconds=positive_float(
+            "STATEFORGE_DPT_AUTO_RECONCILE_FULL_SECONDS",
+            1_800.0,
         ),
     )

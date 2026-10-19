@@ -33,7 +33,9 @@ provide the delivery evidence. Each computer keeps its own local working copy.
   evidence, and CI status current in the background after GitHub is connected,
   without switching branches. Refreshes are adaptive, concurrent, and
   coalesced across the server and every open tab; conflicts and unpublished
-  local edits are surfaced, not overwritten.
+  local edits are surfaced, not overwritten. Routine refreshes compare a
+  lightweight GitHub index and fully reload only changed evidence, with periodic
+  full audits as a correctness backstop.
 - **Regression-resistant implementation.** Define cross-repository context,
   protected behavior, and verification before work begins; review the exact
   change surface and retain relevant bug history afterward.
