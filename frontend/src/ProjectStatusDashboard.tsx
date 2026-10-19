@@ -263,9 +263,25 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
     : bounds.left + (index / (repositories.length - 1)) * (bounds.right - bounds.left);
   const yFor = (value: number) => bounds.bottom - (value / scaleMaximum) * (bounds.bottom - bounds.top);
   const gridValues = [0, 1, 2, 3, 4].map((position) => (position / 4) * scaleMaximum);
-  const pathFor = (state: StepState) => repositories
-    .map((repository, index) => `${index === 0 ? "M" : "L"}${xFor(index)},${yFor(repository[state] || 0)}`)
-    .join(" ");
+  const pathFor = (state: StepState) => {
+    let path = "";
+    let previous: { index: number; x: number; y: number } | null = null;
+    repositories.forEach((repository, index) => {
+      if (!repository.total) {
+        previous = null;
+        return;
+      }
+      const point = { index, x: xFor(index), y: yFor(repository[state] || 0) };
+      if (!previous || previous.index !== index - 1) {
+        path += `M${point.x},${point.y}`;
+      } else {
+        const midpoint = (previous.x + point.x) / 2;
+        path += ` C${midpoint},${previous.y} ${midpoint},${point.y} ${point.x},${point.y}`;
+      }
+      previous = point;
+    });
+    return path;
+  };
   const visiblePopulatedStates = populatedStates.filter((state) => visibleStates[state]);
   const toggleState = (state: StepState) => {
     if (!seriesTotals[state]) return;
@@ -287,7 +303,7 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
   return (
     <article className="status-panel status-milestone-graph-panel">
       <header className="status-panel-header status-milestone-graph-header">
-        <div><span>MILESTONE DISTRIBUTION</span><h2>Milestones by repository</h2></div>
+        <div><span>MILESTONE DISTRIBUTION</span><h2>Milestones by repository</h2><p>Compare delivery states across every workstream.</p></div>
         <div className="status-milestone-graph-legend" aria-label="Toggle milestone state lines">
           {chartStateOrder.map((state) => (
             <button
@@ -298,7 +314,7 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
               onClick={() => toggleState(state)}
               type="button"
             >
-              <i className={`status-dot status-dot-${state}`} />{stateLabels[state]}
+              <i className={`status-dot status-dot-${state}`} /><span>{stateLabels[state]}</span><b>{seriesTotals[state]}</b>
             </button>
           ))}
         </div>
@@ -315,8 +331,15 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
                 </g>
               );
             })}
-            <text className="status-milestone-graph-axis-title" textAnchor="middle" transform={`translate(14 ${(bounds.top + bounds.bottom) / 2}) rotate(-90)`}>MILESTONES</text>
+            <text className="status-milestone-graph-axis-title" x={bounds.left} y={14}>MILESTONES</text>
             <text className="status-milestone-graph-axis-title" textAnchor="middle" x={(bounds.left + bounds.right) / 2} y={290}>REPOSITORIES</text>
+          </g>
+          <g className="status-milestone-repository-bands">
+            {repositories.map((repository, index) => {
+              const x = xFor(index);
+              const bandWidth = Math.max(54, (bounds.right - bounds.left) / Math.max(repositories.length, 1) - 12);
+              return <rect className={`${repository.total ? "" : "empty"}${activeRepository === index ? " selected" : ""}`} height={bounds.bottom - bounds.top} key={repository.repository_id} rx="10" width={bandWidth} x={x - bandWidth / 2} y={bounds.top} />;
+            })}
           </g>
           {visiblePopulatedStates.map((state) => (
             <path className={`status-milestone-line status-milestone-line-${state}`} d={pathFor(state)} key={state} />
@@ -347,11 +370,20 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
                 tabIndex={0}
               >
                 <rect className="status-milestone-hit-target" height={bounds.bottom - bounds.top + 44} width={Math.max(42, (bounds.right - bounds.left) / Math.max(repositories.length, 1))} x={x - Math.max(42, (bounds.right - bounds.left) / Math.max(repositories.length, 1)) / 2} y={bounds.top} />
-                {visiblePopulatedStates.map((state) => (
-                  <circle className={`status-milestone-point status-milestone-point-${state}`} cx={x} cy={yFor(repository[state] || 0)} key={state} r={selected ? 5.2 : 4} />
-                ))}
+                {repository.total && visiblePopulatedStates.map((state) => {
+                  const value = repository[state] || 0;
+                  return (
+                    <g key={state}>
+                      <circle className={`status-milestone-point status-milestone-point-${state}`} cx={x} cy={yFor(value)} r={selected ? 5.4 : 4.3} />
+                      {value > 0 && <text className={`status-milestone-value status-milestone-value-${state}`} textAnchor="middle" x={x} y={yFor(value) - 11}>{value}</text>}
+                    </g>
+                  );
+                })}
                 <text className="status-milestone-repository-label" textAnchor="middle" x={x} y={254}>{repository.alias}</text>
-                {!repository.total && <text className="status-milestone-empty-label" textAnchor="middle" x={x} y={269}>No milestones</text>}
+                {!repository.total && <>
+                  <rect className="status-milestone-empty-pill" height="15" rx="7.5" width="72" x={x - 36} y="258" />
+                  <text className="status-milestone-empty-label" textAnchor="middle" x={x} y={268.5}>No milestones</text>
+                </>}
               </g>
             );
           })}
