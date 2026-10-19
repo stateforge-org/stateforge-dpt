@@ -398,18 +398,7 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-chart-series-cancelled { stroke: #758195; }
 .status-chart-series-in_review, .status-chart-series-pending, .status-chart-series-planned { stroke-dasharray: 5 4; }
 .status-chart-series-cancelled { stroke-dasharray: 2 5; }
-.status-chart-scope-area { fill: url(#status-scope-area); }
-.status-chart-area { fill: url(#status-complete-area); }
-.status-chart-baseline-column { fill: url(#status-baseline-column); }
-.status-chart-complete-column { fill: url(#status-complete-column); filter: drop-shadow(0 7px 8px rgba(55,125,255,.2)); }
-.status-chart-baseline-segment { stroke: rgba(255,255,255,.92); stroke-width: 1.5; filter: drop-shadow(0 4px 7px rgba(37,55,82,.12)); }
-.status-chart-fill-completed { fill: var(--green); }
-.status-chart-fill-in_review { fill: var(--purple); }
-.status-chart-fill-ready { fill: var(--blue); }
-.status-chart-fill-pending { fill: #d69a25; }
-.status-chart-fill-blocked { fill: var(--red); }
-.status-chart-fill-planned { fill: #b8c5d5; }
-.status-chart-fill-cancelled { fill: #758195; }
+.status-chart-baseline-stub { stroke-width: 3.5; stroke-linecap: round; filter: drop-shadow(0 3px 4px rgba(37,55,82,.16)); }
 .status-chart-point { fill: white; stroke-width: 2.4; }
 .status-chart-point-scope { stroke: var(--purple); }
 .status-chart-point-completed { stroke: var(--green); }
@@ -430,6 +419,13 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-chart-value-label { font-size: 8px; font-weight: 800; }
 .status-chart-value-label.scope { fill: var(--purple); }
 .status-chart-value-label.complete { fill: var(--blue-dark); }
+.status-chart-value-completed { fill: #087452; }
+.status-chart-value-in_review { fill: #5b43bc; }
+.status-chart-value-ready { fill: var(--blue-dark); }
+.status-chart-value-pending { fill: #9b680d; }
+.status-chart-value-blocked { fill: #b52f37; }
+.status-chart-value-planned { fill: #718198; }
+.status-chart-value-cancelled { fill: #596679; }
 .status-chart-empty-label { fill: #8b97a8; font-size: 10px; }
 .status-chart-inspector { position: absolute; z-index: 4; width: 224px; display: flex; align-items: flex-start; flex-direction: column; gap: 3px; padding: 10px 11px; border: 1px solid #2e405a; border-radius: 10px; color: white; background: rgba(23,37,58,.97); box-shadow: 0 12px 28px rgba(15,27,45,.24); pointer-events: none; transform: translate(16px,-8px); animation: status-tooltip-in 100ms ease-out; }
 .status-chart-inspector.align-left { transform: translate(calc(-100% - 16px),-8px); }
