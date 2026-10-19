@@ -78,9 +78,7 @@ def test_workflow_run_state_tracks_latest_github_outcome(
     conclusion: str | None,
     expected: str,
 ) -> None:
-    assert _workflow_run_state(
-        {"status": status, "conclusion": conclusion}
-    ) == expected
+    assert _workflow_run_state({"status": status, "conclusion": conclusion}) == expected
 
 
 def test_dashboard_fetches_latest_ci_run_for_managed_repositories(

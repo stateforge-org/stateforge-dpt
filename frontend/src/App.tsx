@@ -61,7 +61,7 @@ import remarkGfm from "remark-gfm";
 import { api, apiStream } from "./api";
 import { Markdown } from "./Markdown";
 import { PlanEditorPage } from "./PlanEditor";
-import { ReleaseProgressMap } from "./ReleaseProgressMap";
+import { ProjectStatusDashboard } from "./ProjectStatusDashboard";
 import type {
   Activity,
   Artifact,
@@ -1436,33 +1436,13 @@ function CurrentPage(props: {
 }
 
 function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: { dashboard: Dashboard; onAddRepository: () => void; onOpenStep: (step: Step) => void; onReconcile: () => void }) {
-  const total = dashboard.steps.length;
-  const completed = dashboard.metrics.completed || 0;
-  const progress = total ? Math.round((completed / total) * 100) : 0;
-  const ready = dashboard.steps.filter((step) => step.dependencies_complete && (step.computed_state === "ready" || step.computed_state === "pending")).slice(0, 4);
-  const review = dashboard.steps.filter((step) => step.computed_state === "in_review").slice(0, 4);
   return (
     <>
       <PageHeader eyebrow="Project overview" title={`${dashboard.project.name} ${dashboard.project.release}`} description="The canonical project plan and current GitHub delivery evidence." actions={<button className="button button-primary" onClick={onReconcile}><RefreshCw />Reconcile GitHub</button>} />
       <RepositoryCiStrip repositories={dashboard.repositories} onAddRepository={onAddRepository} />
-      <section className="metric-grid">
-        <MetricCard label="Trusted complete" value={`${completed}/${total}`} detail={`${progress}% of the current release`} tone="blue" icon={<ShieldCheck />} />
-        <MetricCard label="Ready to build" value={String(dashboard.metrics.actionable)} detail="All prerequisites satisfied" tone="green" icon={<Sparkles />} />
-        <MetricCard label="In review" value={String(dashboard.metrics.in_review)} detail="Open pull requests" tone="purple" icon={<GitPullRequest />} />
-        <MetricCard label="Active blockers" value={String(dashboard.metrics.active_blockers)} detail={`${dashboard.metrics.blocked_milestones} milestones affected`} tone="red" icon={<Bug />} />
-        <MetricCard label="Reconciliation findings" value={String(dashboard.metrics.findings)} detail="Workflow rules requiring attention" tone="orange" icon={<FileDiff />} />
-      </section>
-      <section className="overview-grid">
-        <ReleaseProgressMap dashboard={dashboard} onOpenStep={onOpenStep} />
-        <article className="panel"><PanelTitle title="Ready now" meta={`${ready.length} shown`} />{ready.length ? <div className="compact-list">{ready.map((step) => <StepRow key={step.step_id} step={step} onClick={() => onOpenStep(step)} />)}</div> : <EmptyMini title="No ready work" text="Complete an upstream dependency to unlock the next step." />}</article>
-        <article className="panel"><PanelTitle title="Active reviews" meta={`${review.length} shown`} />{review.length ? <div className="compact-list">{review.map((step) => <StepRow key={step.step_id} step={step} onClick={() => onOpenStep(step)} />)}</div> : <EmptyMini title="No pull requests in review" text="GitHub reconciliation will place open PRs here." />}</article>
-      </section>
+      <ProjectStatusDashboard dashboard={dashboard} onOpenStep={onOpenStep} />
     </>
   );
-}
-
-function MetricCard({ label, value, detail, tone, icon }: { label: string; value: string; detail: string; tone: string; icon: ReactNode }) {
-  return <article className={`metric-card metric-${tone}`}><span className="metric-icon">{icon}</span><div><p>{label}</p><strong>{value}</strong><span>{detail}</span></div></article>;
 }
 
 function PanelTitle({ title, meta }: { title: string; meta?: string }) {
