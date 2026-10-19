@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -53,6 +53,7 @@ from stateforge_dpt.service import DPTError, DPTService
 
 SESSION_COOKIE = "stateforge_dpt_session"
 ReconciliationReporter = Callable[[dict[str, object]], Awaitable[None]]
+LOGGER = logging.getLogger(__name__)
 
 
 def _workflow_run_state(run: dict[str, Any]) -> str:
@@ -100,6 +101,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     service = DPTService(database, SecretStore(resolved.data_dir))
     proposals = PlanProposalService(database, service)
     github = GitHubClient(resolved)
+    reconciliation_tasks: dict[str, asyncio.Task[dict[str, object]]] = {}
+    reconciliation_completed_at: dict[str, float] = {}
+    reconciliation_failures: dict[str, int] = {}
+    background_session_token: str | None = None
+    reconciliation_wakeup: asyncio.Event | None = None
 
     mcp_server = None
     mcp_application = None
@@ -139,11 +145,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
-        if mcp_server is None:
-            yield
-            return
-        async with mcp_server.session_manager.run():
-            yield
+        nonlocal reconciliation_wakeup
+        reconciliation_wakeup = asyncio.Event()
+        background_task = (
+            asyncio.create_task(automatic_reconciliation_loop())
+            if resolved.auto_reconcile_enabled
+            else None
+        )
+        try:
+            if mcp_server is None:
+                yield
+            else:
+                async with mcp_server.session_manager.run():
+                    yield
+        finally:
+            reconciliation_wakeup = None
+            if background_task is not None:
+                background_task.cancel()
+                await asyncio.gather(background_task, return_exceptions=True)
 
     app = FastAPI(
         title="StateForge DPT",
@@ -161,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def authenticated_session(
         session_token: str | None,
     ) -> dict[str, object]:
+        nonlocal background_session_token
         current = service.session(session_token)
         if current is None or session_token is None:
             raise HTTPException(
@@ -198,6 +218,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         status_code=401,
                         detail="GitHub authentication required",
                     )
+        background_session_token = session_token
+        if reconciliation_wakeup is not None:
+            reconciliation_wakeup.set()
         return current
 
     def human_actor(session_token: str | None) -> str:
@@ -327,7 +350,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         project = service.project(project_id)
         repositories = service.repositories(project_id)
-        total = 0
         repository_count = len(repositories)
         artifact_batches: dict[str, list[dict[str, Any]]] = {}
         repositories_by_name = {
@@ -335,7 +357,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for repository in repositories
         }
 
-        for index, repository in enumerate(repositories, start=1):
+        fetch_limit = asyncio.Semaphore(4)
+        progress_lock = asyncio.Lock()
+        artifacts_loaded = 0
+
+        async def fetch_repository(
+            index: int,
+            repository: dict[str, Any],
+        ) -> tuple[str, list[dict[str, Any]]]:
+            nonlocal artifacts_loaded
             full_name = str(repository["github_full_name"])
             if report:
                 await report(
@@ -350,15 +380,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "repository": full_name,
                         "repository_index": index,
                         "repository_count": repository_count,
-                        "artifacts": total,
+                        "artifacts": artifacts_loaded,
                     }
                 )
-            artifacts = await github.repository_artifacts(
-                str(current["access_token"]),
-                full_name,
-                str(project["slug"]),
-            )
-            artifact_batches[str(repository["repository_id"])] = artifacts
+            async with fetch_limit:
+                artifacts = await github.repository_artifacts(
+                    str(current["access_token"]),
+                    full_name,
+                    str(project["slug"]),
+                )
+            async with progress_lock:
+                artifacts_loaded += len(artifacts)
+                current_total = artifacts_loaded
             if report:
                 await report(
                     {
@@ -372,10 +405,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "repository": full_name,
                         "repository_index": index,
                         "repository_count": repository_count,
-                        "artifacts": total + len(artifacts),
+                        "artifacts": current_total,
                     }
                 )
-            total += len(artifacts)
+            return str(repository["repository_id"]), artifacts
+
+        fetched_batches = await asyncio.gather(
+            *(
+                fetch_repository(index, repository)
+                for index, repository in enumerate(repositories, start=1)
+            )
+        )
+        artifact_batches.update(fetched_batches)
+        total = sum(len(artifacts) for artifacts in artifact_batches.values())
 
         dependency_records: list[dict[str, object]] = []
         milestone_issues: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -450,12 +492,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
         for repository in repositories:
-            service.record_github_artifacts(
+            await asyncio.to_thread(
+                service.record_github_artifacts,
                 project_id,
                 str(repository["repository_id"]),
                 artifact_batches.get(str(repository["repository_id"]), []),
             )
-        service.record_issue_dependencies(project_id, dependency_records)
+        await asyncio.to_thread(
+            service.record_issue_dependencies,
+            project_id,
+            dependency_records,
+        )
 
         if report:
             await report(
@@ -493,10 +540,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "artifacts": total,
                 }
             )
-        for step in context_steps:
-            await asyncio.to_thread(
-                service.inspect_step_context, project_id, str(step["step_id"])
-            )
+        context_limit = asyncio.Semaphore(4)
+
+        async def inspect_context(step: dict[str, Any]) -> None:
+            async with context_limit:
+                await asyncio.to_thread(
+                    service.inspect_step_context,
+                    project_id,
+                    str(step["step_id"]),
+                )
+
+        await asyncio.gather(*(inspect_context(step) for step in context_steps))
         dashboard = service.dashboard(project_id)
         service.record_project_status_snapshot(project_id, dashboard)
         return {
@@ -508,6 +562,141 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "plan_source_branch": plan_result["branch"],
             "plan_errors": plan_result["errors"],
         }
+
+    async def coordinated_reconciliation(
+        project_id: str,
+        current: dict[str, object],
+        report: ReconciliationReporter | None = None,
+    ) -> dict[str, object]:
+        """Share one in-flight reconciliation across tabs and refresh triggers."""
+        task = reconciliation_tasks.get(project_id)
+        if task is None:
+            task = asyncio.create_task(
+                reconcile_github_evidence(project_id, current, report)
+            )
+            reconciliation_tasks[project_id] = task
+
+            def finish(completed: asyncio.Task[dict[str, object]]) -> None:
+                if reconciliation_tasks.get(project_id) is completed:
+                    reconciliation_tasks.pop(project_id, None)
+                if completed.cancelled():
+                    return
+                error = completed.exception()
+                if error is None:
+                    reconciliation_completed_at[project_id] = (
+                        asyncio.get_running_loop().time()
+                    )
+                    reconciliation_failures[project_id] = 0
+                else:
+                    reconciliation_failures[project_id] = (
+                        reconciliation_failures.get(project_id, 0) + 1
+                    )
+                if reconciliation_wakeup is not None:
+                    reconciliation_wakeup.set()
+
+            task.add_done_callback(finish)
+        elif report:
+            await report(
+                {
+                    "phase": "fetching",
+                    "title": "Using the active refresh",
+                    "detail": (
+                        "Another tab or automatic refresh already started this "
+                        "reconciliation. DPT is sharing that work instead of "
+                        "duplicating GitHub requests."
+                    ),
+                    "repository": None,
+                    "repository_index": 0,
+                    "repository_count": len(service.repositories(project_id)),
+                    "artifacts": 0,
+                }
+            )
+        return await asyncio.shield(task)
+
+    def automatic_reconciliation_interval(dashboard: dict[str, Any]) -> float:
+        """Choose a faster cadence while GitHub delivery work is in motion."""
+        metrics = dashboard["metrics"]
+        has_active_delivery = bool(
+            metrics["in_review"] or metrics["ready"] or metrics["pending"]
+        )
+        return (
+            resolved.auto_reconcile_active_seconds
+            if has_active_delivery
+            else resolved.auto_reconcile_idle_seconds
+        )
+
+    async def automatic_reconciliation_loop() -> None:
+        """Keep authenticated projects current without requiring an open tab."""
+        nonlocal background_session_token
+        project_limit = asyncio.Semaphore(2)
+
+        async def refresh_project(
+            project_id: str,
+            current: dict[str, object],
+        ) -> None:
+            async with project_limit:
+                try:
+                    await coordinated_reconciliation(project_id, current)
+                except Exception as error:
+                    LOGGER.error(
+                        "Automatic reconciliation failed for project %s: %s",
+                        project_id,
+                        error,
+                    )
+
+        while True:
+            wakeup = reconciliation_wakeup
+            if wakeup is None:
+                return
+            session_token = background_session_token
+            if session_token is None:
+                wakeup.clear()
+                await wakeup.wait()
+                continue
+
+            try:
+                current = await authenticated_session(session_token)
+            except HTTPException as error:
+                if error.status_code != 401:
+                    raise
+                background_session_token = None
+                continue
+
+            projects = await asyncio.to_thread(service.projects)
+            now = asyncio.get_running_loop().time()
+            due_projects: list[str] = []
+            next_due_in = resolved.auto_reconcile_idle_seconds
+            for project in projects:
+                project_id = str(project["project_id"])
+                dashboard = await asyncio.to_thread(service.dashboard, project_id)
+                failures = reconciliation_failures.get(project_id, 0)
+                interval = (
+                    min(300.0, 15.0 * (2**failures))
+                    if failures
+                    else automatic_reconciliation_interval(dashboard)
+                )
+                elapsed = now - reconciliation_completed_at.get(project_id, 0.0)
+                remaining = interval - elapsed
+                if remaining <= 0:
+                    due_projects.append(project_id)
+                else:
+                    next_due_in = min(next_due_in, remaining)
+
+            if due_projects:
+                await asyncio.gather(
+                    *(
+                        refresh_project(project_id, current)
+                        for project_id in due_projects
+                    )
+                )
+                continue
+
+            wakeup.clear()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(
+                    wakeup.wait(),
+                    timeout=max(0.25, min(next_due_in, 30.0)),
+                )
 
     @app.exception_handler(DPTError)
     async def handle_dpt_error(_request: Request, error: DPTError) -> JSONResponse:
@@ -528,6 +717,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "github_authentication": "device_flow",
             "generated_filename": "STATEFORGE_DPT.md",
+            "automatic_reconciliation": resolved.auto_reconcile_enabled,
             "mcp": {
                 "enabled": resolved.mcp_enabled,
                 "path": resolved.mcp_path if resolved.mcp_enabled else None,
@@ -572,6 +762,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def poll_github_device_authorization(
         authorization_id: str,
     ) -> JSONResponse:
+        nonlocal background_session_token
         authorization = service.device_authorization(authorization_id)
         if authorization["retry_after"]:
             return JSONResponse(
@@ -607,6 +798,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             identity.expires_in,
             identity.refresh_token_expires_in,
         )
+        background_session_token = session_token
+        if reconciliation_wakeup is not None:
+            reconciliation_wakeup.set()
         response = JSONResponse(
             {
                 "status": "complete",
@@ -632,7 +826,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def logout(
         session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
     ) -> Response:
+        nonlocal background_session_token
         service.delete_session(session_token)
+        if session_token == background_session_token:
+            background_session_token = None
+            if reconciliation_wakeup is not None:
+                reconciliation_wakeup.set()
         response = Response(status_code=204)
         response.delete_cookie(SESSION_COOKIE)
         return response
@@ -1570,7 +1769,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, object]:
         current = await authenticated_session(session_token)
         try:
-            return await reconcile_github_evidence(project_id, current)
+            return await coordinated_reconciliation(project_id, current)
         except GitHubError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -1589,7 +1788,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             async def run() -> None:
                 try:
-                    result = await reconcile_github_evidence(
+                    result = await coordinated_reconciliation(
                         project_id,
                         current,
                         report,

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import hashlib
+import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import quote
@@ -66,6 +71,9 @@ class GitHubClient:
     def __init__(self, settings: Settings) -> None:
         """Create a GitHub client using the StateForge GitHub App."""
         self.settings = settings
+        self._get_cache: OrderedDict[tuple[str, str, str], tuple[str, Any]] = (
+            OrderedDict()
+        )
 
     async def start_device_authorization(self) -> DeviceAuthorization:
         """Request a verification code for the GitHub App device flow."""
@@ -177,6 +185,20 @@ class GitHubClient:
     ) -> list[dict[str, Any]]:
         """Load DPT-labelled issues and pull requests for a repository."""
         artifacts: list[dict[str, Any]] = []
+        hydration_limit = asyncio.Semaphore(6)
+
+        async def hydrate(
+            client: httpx.AsyncClient,
+            item: dict[str, Any],
+        ) -> dict[str, Any]:
+            async with hydration_limit:
+                return await self._hydrate_issue(
+                    client,
+                    access_token,
+                    full_name,
+                    dict(item),
+                )
+
         async with httpx.AsyncClient(timeout=30) as client:
             for page in range(1, 11):
                 items = await self._request(
@@ -192,12 +214,7 @@ class GitHubClient:
                     },
                 )
                 artifacts.extend(
-                    [
-                        await self._hydrate_issue(
-                            client, access_token, full_name, dict(item)
-                        )
-                        for item in items
-                    ]
+                    await asyncio.gather(*(hydrate(client, item) for item in items))
                 )
                 if len(items) < 100:
                     break
@@ -552,16 +569,40 @@ class GitHubClient:
         path: str,
         **kwargs: Any,
     ) -> Any:
+        method = method.upper()
+        supplied_headers = kwargs.pop("headers", {})
+        request_headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {access_token}",
+            "X-GitHub-Api-Version": "2026-03-10",
+            **supplied_headers,
+        }
+        cache_key: tuple[str, str, str] | None = None
+        cached: tuple[str, Any] | None = None
+        if method == "GET":
+            cache_key = (
+                hashlib.sha256(access_token.encode()).hexdigest(),
+                path,
+                json.dumps(kwargs.get("params"), sort_keys=True, default=str),
+            )
+            cached = self._get_cache.get(cache_key)
+            if cached is not None:
+                request_headers["If-None-Match"] = cached[0]
         response = await client.request(
             method,
             f"{self.api_url}{path}",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {access_token}",
-                "X-GitHub-Api-Version": "2026-03-10",
-            },
+            headers=request_headers,
             **kwargs,
         )
+        if response.status_code == 304 and cached is not None and cache_key is not None:
+            # Another concurrent request can advance the bounded LRU while this
+            # request is in flight. Restore the validated entry before touching
+            # its recency so an eviction cannot turn a valid 304 into KeyError.
+            self._get_cache[cache_key] = cached
+            self._get_cache.move_to_end(cache_key)
+            while len(self._get_cache) > 512:
+                self._get_cache.popitem(last=False)
+            return copy.deepcopy(cached[1])
         if response.status_code >= 400:
             try:
                 payload = response.json()
@@ -576,7 +617,14 @@ class GitHubClient:
             if validation_details:
                 message = f"{message} — {'; '.join(validation_details)}"
             raise GitHubError(f"GitHub returned {response.status_code}: {message}")
-        return response.json()
+        payload = response.json()
+        etag = response.headers.get("etag")
+        if cache_key is not None and etag:
+            self._get_cache[cache_key] = (etag, copy.deepcopy(payload))
+            self._get_cache.move_to_end(cache_key)
+            while len(self._get_cache) > 512:
+                self._get_cache.popitem(last=False)
+        return payload
 
     @staticmethod
     def _token_from_payload(payload: dict[str, Any]) -> RefreshedToken:

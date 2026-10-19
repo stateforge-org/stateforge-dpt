@@ -334,6 +334,55 @@ def test_repository_artifacts_include_timeline_and_review_comments(
     ]
 
 
+def test_get_requests_reuse_etag_payloads(tmp_path: Path) -> None:
+    github = GitHubClient(
+        Settings(
+            host="127.0.0.1",
+            port=8463,
+            data_dir=tmp_path,
+            frontend_dir=tmp_path,
+            github_client_id=DEFAULT_GITHUB_CLIENT_ID,
+        )
+    )
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                headers={"ETag": '"current"'},
+                json={"value": 1},
+            )
+        assert request.headers["If-None-Match"] == '"current"'
+        return httpx.Response(304)
+
+    async def request_twice() -> tuple[dict[str, int], dict[str, int]]:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            first = await github._request(
+                client,
+                "access-token",
+                "GET",
+                "/repos/stateforge-org/stateforge-agent/issues",
+                params={"state": "all"},
+            )
+            first["value"] = 99
+            second = await github._request(
+                client,
+                "access-token",
+                "GET",
+                "/repos/stateforge-org/stateforge-agent/issues",
+                params={"state": "all"},
+            )
+            return first, second
+
+    first, second = asyncio.run(request_twice())
+
+    assert first == {"value": 99}
+    assert second == {"value": 1}
+    assert len(requests) == 2
+
+
 def test_latest_workflow_run_is_scoped_to_branch_without_status_filter(
     monkeypatch,
     tmp_path: Path,

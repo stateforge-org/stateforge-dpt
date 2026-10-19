@@ -53,6 +53,11 @@ class Settings:
     mcp_path: str = "/mcp"
     mcp_max_read_bytes: int = 128_000
     mcp_allow_remote: bool = False
+    # Programmatic Settings instances keep background work disabled unless a
+    # caller explicitly opts in. load_settings() enables it for the local app.
+    auto_reconcile_enabled: bool = False
+    auto_reconcile_active_seconds: float = 45.0
+    auto_reconcile_idle_seconds: float = 120.0
 
     @property
     def database_path(self) -> Path:
@@ -93,6 +98,12 @@ def load_settings(root: Path | None = None) -> Settings:
             return False
         raise ValueError(f"{key} must be true or false")
 
+    def positive_float(key: str, default: float) -> float:
+        configured = float(value(key, str(default)))
+        if configured <= 0:
+            raise ValueError(f"{key} must be positive")
+        return configured
+
     data_dir = directory("STATEFORGE_DPT_DATA_DIR", default_data_dir())
     frontend_dir = directory("STATEFORGE_DPT_FRONTEND_DIR", default_frontend_dir())
 
@@ -117,4 +128,16 @@ def load_settings(root: Path | None = None) -> Settings:
         mcp_path=mcp_path,
         mcp_max_read_bytes=mcp_max_read_bytes,
         mcp_allow_remote=boolean("STATEFORGE_DPT_MCP_ALLOW_REMOTE", False),
+        auto_reconcile_enabled=boolean(
+            "STATEFORGE_DPT_AUTO_RECONCILE_ENABLED",
+            True,
+        ),
+        auto_reconcile_active_seconds=positive_float(
+            "STATEFORGE_DPT_AUTO_RECONCILE_ACTIVE_SECONDS",
+            45.0,
+        ),
+        auto_reconcile_idle_seconds=positive_float(
+            "STATEFORGE_DPT_AUTO_RECONCILE_IDLE_SECONDS",
+            120.0,
+        ),
     )

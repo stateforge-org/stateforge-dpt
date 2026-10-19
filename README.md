@@ -29,8 +29,11 @@ provide the delivery evidence. Each computer keeps its own local working copy.
   latest successful GitHub Actions run on the plan source branch.
 - **Git-backed collaboration.** Share the complete plan in
   `STATEFORGE_DPT.md` and import it on another computer from a participating clone.
-- **Safe synchronization.** Refresh the shared plan without switching branches.
-  Conflicts and unpublished local edits are surfaced, not silently overwritten.
+- **Continuous safe synchronization.** DPT keeps the shared plan, delivery
+  evidence, and CI status current in the background after GitHub is connected,
+  without switching branches. Refreshes are adaptive, concurrent, and
+  coalesced across the server and every open tab; conflicts and unpublished
+  local edits are surfaced, not overwritten.
 - **Regression-resistant implementation.** Define cross-repository context,
   protected behavior, and verification before work begins; review the exact
   change surface and retain relevant bug history afterward.
@@ -69,8 +72,10 @@ Use a virtual environment for an OS-managed Python. If you already use
 3. **Build the plan.** In **Plan editor**, create a step, describe its expected
    result, and choose its repository. Select prerequisite cards to connect work
    across repositories—no dependency IDs to memorize.
-4. **Follow delivery.** Explore **Roadmap** and **Work queue**. Open a step for
-   its GitHub actions and details; reconcile to refresh shared plans and status.
+4. **Follow delivery.** Explore **Roadmap** and **Work queue**. DPT refreshes
+   every project's shared plan and GitHub evidence automatically while the DPT
+   server is running; **Sync now** remains available when you want an immediate
+   refresh.
 
 Joining an existing project? Choose **Import from repository** on the projects
 page and select a local clone containing a published `STATEFORGE_DPT.md`.
@@ -132,8 +137,8 @@ Collaborate through your repositories, not a separate planning server:
 3. On another computer, install DPT and import the project from any participating
    clone. Attach or clone the remaining repositories; the steps and dependencies
    are already there.
-4. Connect GitHub and reconcile to fetch newer plan revisions and delivery
-   evidence—even while working on a feature branch.
+4. Connect GitHub. DPT automatically fetches newer plan revisions and delivery
+   evidence—even while you remain on a feature branch.
 
 The source branch can be your default branch or another shared parent, such as
 `mvp/implementation`. Publishing writes local files; it does **not** commit,
