@@ -378,6 +378,17 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-milestone-repository-bands rect { fill: transparent; transition: fill 120ms ease; }
 .status-milestone-repository-bands rect.empty { fill: rgba(237,242,248,.58); stroke: #e5ebf3; stroke-width: 1; stroke-dasharray: 4 5; }
 .status-milestone-repository-bands rect.selected { fill: rgba(55,125,255,.045); }
+.status-milestone-area { pointer-events: none; }
+.status-milestone-area-stop { stop-opacity: .22; }
+.status-milestone-area-end { stop-opacity: .025; }
+.status-milestone-area-stop-completed, .status-milestone-area-end-completed { stop-color: var(--green); }
+.status-milestone-area-stop-in_review, .status-milestone-area-end-in_review { stop-color: var(--purple); }
+.status-milestone-area-stop-ready, .status-milestone-area-end-ready { stop-color: var(--blue); }
+.status-milestone-area-stop-pending, .status-milestone-area-end-pending { stop-color: #d69a25; }
+.status-milestone-area-stop-blocked, .status-milestone-area-end-blocked { stop-color: var(--red); }
+.status-milestone-area-stop-planned, .status-milestone-area-end-planned { stop-color: #aebdce; }
+.status-milestone-area-stop-cancelled, .status-milestone-area-end-cancelled { stop-color: #758195; }
+.status-milestone-area-stop-pending { stop-opacity: .13; }
 .status-milestone-line { fill: none; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 2px 2px rgba(26,50,87,.08)); pointer-events: none; }
 .status-milestone-line-completed { stroke: var(--green); }
 .status-milestone-line-in_review { stroke: var(--purple); stroke-dasharray: 8 5; }
@@ -389,14 +400,14 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .status-milestone-crosshair { stroke: #829dc2; stroke-width: 1; stroke-dasharray: 3 4; pointer-events: none; }
 .status-milestone-observation { outline: none; cursor: pointer; }
 .status-milestone-hit-target { fill: transparent; }
-.status-milestone-point { fill: #fff; stroke-width: 3; transition: r 120ms ease, filter 120ms ease; }
-.status-milestone-point-completed { stroke: var(--green); }
-.status-milestone-point-in_review { stroke: var(--purple); }
-.status-milestone-point-ready { stroke: var(--blue); }
-.status-milestone-point-pending { stroke: #d69a25; }
-.status-milestone-point-blocked { stroke: var(--red); }
-.status-milestone-point-planned { stroke: #aebdce; }
-.status-milestone-point-cancelled { stroke: #758195; }
+.status-milestone-point { stroke: #fff; stroke-width: 2; transition: r 120ms ease, filter 120ms ease; }
+.status-milestone-point-completed { fill: var(--green); }
+.status-milestone-point-in_review { fill: var(--purple); }
+.status-milestone-point-ready { fill: var(--blue); }
+.status-milestone-point-pending { fill: #d69a25; }
+.status-milestone-point-blocked { fill: var(--red); }
+.status-milestone-point-planned { fill: #aebdce; }
+.status-milestone-point-cancelled { fill: #758195; }
 .status-milestone-observation:hover .status-milestone-point, .status-milestone-observation.selected .status-milestone-point { filter: drop-shadow(0 3px 4px rgba(22,44,77,.22)); }
 .status-milestone-observation:focus-visible .status-milestone-repository-label { fill: #1761cc; text-decoration: underline; }
 .status-milestone-repository-label { fill: #33445d; font-size: 9px; font-weight: 800; }

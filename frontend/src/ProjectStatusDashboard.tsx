@@ -282,6 +282,30 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
     });
     return path;
   };
+  const areaPathFor = (state: StepState) => {
+    const segments: Array<Array<{ x: number; y: number }>> = [];
+    let current: Array<{ x: number; y: number }> = [];
+    repositories.forEach((repository, index) => {
+      if (!repository.total) {
+        if (current.length) segments.push(current);
+        current = [];
+        return;
+      }
+      current.push({ x: xFor(index), y: yFor(repository[state] || 0) });
+    });
+    if (current.length) segments.push(current);
+    return segments.map((points) => {
+      const first = points[0];
+      let path = `M${first.x},${bounds.bottom} L${first.x},${first.y}`;
+      points.slice(1).forEach((point, index) => {
+        const previous = points[index];
+        const midpoint = (previous.x + point.x) / 2;
+        path += ` C${midpoint},${previous.y} ${midpoint},${point.y} ${point.x},${point.y}`;
+      });
+      const last = points[points.length - 1];
+      return `${path} L${last.x},${bounds.bottom} Z`;
+    }).join(" ");
+  };
   const visiblePopulatedStates = populatedStates.filter((state) => visibleStates[state]);
   const toggleState = (state: StepState) => {
     if (!seriesTotals[state]) return;
@@ -321,6 +345,14 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
       </header>
       <div className={`status-milestone-graph${activeRepository === null ? "" : " is-exploring"}`}>
         <svg aria-label="Milestone state counts by repository" role="img" viewBox={`0 0 ${width} ${height}`}>
+          <defs>
+            {chartStateOrder.map((state) => (
+              <linearGradient id={`status-milestone-area-${state}`} key={state} x1="0" x2="0" y1="0%" y2="100%">
+                <stop className={`status-milestone-area-stop status-milestone-area-stop-${state}`} offset="0%" />
+                <stop className={`status-milestone-area-end status-milestone-area-end-${state}`} offset="100%" />
+              </linearGradient>
+            ))}
+          </defs>
           <g className="status-milestone-graph-grid">
             {gridValues.map((value) => {
               const y = yFor(value);
@@ -341,6 +373,9 @@ function RepositoryMilestoneGraph({ repositories }: { repositories: RepositorySt
               return <rect className={`${repository.total ? "" : "empty"}${activeRepository === index ? " selected" : ""}`} height={bounds.bottom - bounds.top} key={repository.repository_id} rx="10" width={bandWidth} x={x - bandWidth / 2} y={bounds.top} />;
             })}
           </g>
+          {visiblePopulatedStates.map((state) => (
+            <path className="status-milestone-area" d={areaPathFor(state)} fill={`url(#status-milestone-area-${state})`} key={state} />
+          ))}
           {visiblePopulatedStates.map((state) => (
             <path className={`status-milestone-line status-milestone-line-${state}`} d={pathFor(state)} key={state} />
           ))}
