@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from stateforge_dpt.git import GitError, _git_environment, publish_plan_branches
+from stateforge_dpt.git import GitError, _git_environment, fetch_remote_branch
 
 
 def git(path: Path, *arguments: str) -> str:
@@ -78,9 +78,7 @@ def test_git_honors_auth_scope_and_does_not_persist_it(tmp_path, monkeypatch):
     assert not (tmp_path / "askpass.sh").exists()
 
 
-def test_plan_branch_publication_preserves_checkout_and_prefers_update_branch(
-    tmp_path: Path,
-) -> None:
+def test_fetch_remote_branch_preserves_active_checkout(tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
     seed = tmp_path / "seed"
     managed = tmp_path / "managed"
@@ -95,17 +93,6 @@ def test_plan_branch_publication_preserves_checkout_and_prefers_update_branch(
     git(seed, "remote", "add", "origin", str(remote))
     git(seed, "push", "-u", "origin", "mvp/implementation")
 
-    git(seed, "switch", "-c", "mvp/update-dpt-plan")
-    (seed / "STATEFORGE_DPT.md").write_text("update branch plan\n", encoding="utf-8")
-    git(seed, "commit", "-am", "Previous plan update")
-    git(seed, "push", "-u", "origin", "mvp/update-dpt-plan")
-    git(seed, "switch", "mvp/implementation")
-    (seed / "STATEFORGE_DPT.md").write_text(
-        "implementation branch plan\n", encoding="utf-8"
-    )
-    git(seed, "commit", "-am", "Concurrent canonical update")
-    git(seed, "push", "origin", "mvp/implementation")
-
     git(
         tmp_path,
         "clone",
@@ -119,26 +106,20 @@ def test_plan_branch_publication_preserves_checkout_and_prefers_update_branch(
     branch_before = git(managed, "branch", "--show-current")
     status_before = git(managed, "status", "--porcelain")
 
-    result = publish_plan_branches(
-        str(managed),
-        "STATEFORGE_DPT.md",
-        "canonical revision\n",
-        "mvp/update-dpt-plan",
-        "mvp/implementation",
-        "chore(dpt): publish plan revision 2",
-        "DPT Test",
-        "dpt-test@example.invalid",
-        None,
-    )
+    (seed / "STATEFORGE_DPT.md").write_text("published plan\n", encoding="utf-8")
+    git(seed, "commit", "-am", "Publish plan")
+    expected = git(seed, "rev-parse", "HEAD")
+    git(seed, "push", "origin", "mvp/implementation")
 
-    assert result["update_branch_created"] is False
+    result = fetch_remote_branch(str(managed), "mvp/implementation")
+
+    assert result == expected
     assert git(managed, "branch", "--show-current") == branch_before
     assert git(managed, "status", "--porcelain") == status_before
     assert (managed / "STATEFORGE_DPT.md").read_text(encoding="utf-8") == (
-        "implementation branch plan\n"
+        "base plan\n"
     )
-    for branch in ("mvp/update-dpt-plan", "mvp/implementation"):
-        assert (
-            git(managed, "show", f"origin/{branch}:STATEFORGE_DPT.md")
-            == "canonical revision"
-        )
+    assert (
+        git(managed, "show", "origin/mvp/implementation:STATEFORGE_DPT.md")
+        == "published plan"
+    )

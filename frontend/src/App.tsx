@@ -476,13 +476,13 @@ function App() {
       const result = await api<{
         revision: number;
         repositories: number;
-        update_branch: string;
+        publisher: string;
         target_branch: string;
       }>(`/api/projects/${route.projectId}/plan/publish-git`, { method: "POST" });
       await loadDashboard(route.projectId);
       setNotice(
-        `Published revision ${result.revision} through ${result.update_branch} `
-        + `and merged it into ${result.target_branch} across ${result.repositories} repositories.`,
+        `Published revision ${result.revision} as verified StateForge DPT App commits `
+        + `to ${result.target_branch} across ${result.repositories} repositories.`,
       );
       return true;
     } catch (caught) {

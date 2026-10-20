@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import hashlib
 import json
+import re
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from stateforge_dpt.config import Settings
+from stateforge_dpt.git import GitError, clone_identity, fetch_remote_branch
 
 
 class GitHubError(RuntimeError):
@@ -70,6 +77,271 @@ class ArtifactDelta:
     listed_items: list[dict[str, Any]]
     changed_artifacts: list[dict[str, Any]]
     unchanged: int
+
+
+class GitHubAppPlanPublisher:
+    """Publish the generated plan as the installed StateForge DPT App."""
+
+    api_url = "https://api.github.com"
+
+    def __init__(self, settings: Settings) -> None:
+        """Use server-side App credentials, separate from the human session."""
+        self.settings = settings
+
+    def publish(
+        self,
+        local_path: str,
+        full_name: str,
+        target_branch: str,
+        filename: str,
+        content: str,
+        commit_message: str,
+    ) -> dict[str, str | bool | int]:
+        """Create one verified bot commit and advance the protected branch."""
+        repository = self._repository_name(full_name)
+        relative = PurePosixPath(filename)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise GitError("Generated plan filename must remain inside the repository")
+        root, clone_name, _origin = clone_identity(local_path)
+        if clone_name != full_name.casefold():
+            raise GitError(f"Origin points to {clone_name}, expected {full_name}")
+
+        app_token = self._app_jwt()
+        with httpx.Client(timeout=30) as client:
+            installation = self._request(
+                client,
+                app_token,
+                "GET",
+                f"/repos/{full_name}/installation",
+            )
+            installation_id = int(installation["id"])
+            token_payload = self._request(
+                client,
+                app_token,
+                "POST",
+                f"/app/installations/{installation_id}/access_tokens",
+                json={
+                    "repositories": [repository],
+                    "permissions": {"contents": "write"},
+                },
+            )
+            installation_token = str(token_payload.get("token") or "")
+            if not installation_token:
+                raise GitError("GitHub did not return an App installation token")
+
+            encoded_branch = quote(target_branch, safe="")
+            reference = self._request(
+                client,
+                installation_token,
+                "GET",
+                f"/repos/{full_name}/git/ref/heads/{encoded_branch}",
+            )
+            previous_commit = str(reference["object"]["sha"])
+            base_commit = self._request(
+                client,
+                installation_token,
+                "GET",
+                f"/repos/{full_name}/git/commits/{previous_commit}",
+            )
+            base_tree = str(base_commit["tree"]["sha"])
+            blob = self._request(
+                client,
+                installation_token,
+                "POST",
+                f"/repos/{full_name}/git/blobs",
+                json={
+                    "content": base64.b64encode(content.encode("utf-8")).decode(
+                        "ascii"
+                    ),
+                    "encoding": "base64",
+                },
+            )
+            tree = self._request(
+                client,
+                installation_token,
+                "POST",
+                f"/repos/{full_name}/git/trees",
+                json={
+                    "base_tree": base_tree,
+                    "tree": [
+                        {
+                            "path": relative.as_posix(),
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": str(blob["sha"]),
+                        }
+                    ],
+                },
+            )
+            tree_sha = str(tree["sha"])
+            if tree_sha == base_tree:
+                return {
+                    "publisher": "stateforge-dpt-app",
+                    "installation_id": installation_id,
+                    "target_branch": target_branch,
+                    "previous_commit": previous_commit,
+                    "target_commit": previous_commit,
+                    "changed": False,
+                    "signature_verified": bool(
+                        base_commit.get("verification", {}).get("verified")
+                    ),
+                    **self._sync_local_tracking_branch(
+                        str(root),
+                        target_branch,
+                        installation_token,
+                        previous_commit,
+                    ),
+                }
+
+            commit = self._request(
+                client,
+                installation_token,
+                "POST",
+                f"/repos/{full_name}/git/commits",
+                json={
+                    "message": commit_message,
+                    "tree": tree_sha,
+                    "parents": [previous_commit],
+                },
+            )
+            target_commit = str(commit["sha"])
+            verified_commit = self._request(
+                client,
+                installation_token,
+                "GET",
+                f"/repos/{full_name}/git/commits/{target_commit}",
+            )
+            verification = verified_commit.get("verification") or {}
+            if verification.get("verified") is not True:
+                reason = str(verification.get("reason") or "unknown")
+                raise GitError(
+                    "GitHub did not verify the StateForge DPT App commit "
+                    f"{target_commit}: {reason}"
+                )
+
+            self._request(
+                client,
+                installation_token,
+                "PATCH",
+                f"/repos/{full_name}/git/refs/heads/{encoded_branch}",
+                json={"sha": target_commit, "force": False},
+            )
+        return {
+            "publisher": "stateforge-dpt-app",
+            "installation_id": installation_id,
+            "target_branch": target_branch,
+            "previous_commit": previous_commit,
+            "target_commit": target_commit,
+            "changed": True,
+            "signature_verified": True,
+            **self._sync_local_tracking_branch(
+                str(root),
+                target_branch,
+                installation_token,
+                target_commit,
+            ),
+        }
+
+    @staticmethod
+    def _sync_local_tracking_branch(
+        local_path: str,
+        target_branch: str,
+        installation_token: str,
+        expected_commit: str,
+    ) -> dict[str, str | bool]:
+        """Refresh local remote state without misreporting a completed publish."""
+        try:
+            fetched = fetch_remote_branch(
+                local_path,
+                target_branch,
+                installation_token,
+            )
+        except GitError as error:
+            return {
+                "local_tracking_updated": False,
+                "local_tracking_error": str(error),
+            }
+        return {
+            "local_tracking_updated": fetched == expected_commit,
+            "local_tracking_commit": fetched,
+        }
+
+    def _app_jwt(self) -> str:
+        """Create the short-lived JWT used only to mint installation tokens."""
+        app_id = self.settings.github_app_id
+        private_key_path = self.settings.github_app_private_key_path
+        if app_id is None or private_key_path is None:
+            raise GitError(
+                "Review & publish requires STATEFORGE_DPT_GITHUB_APP_ID and "
+                "STATEFORGE_DPT_GITHUB_APP_PRIVATE_KEY_PATH"
+            )
+        try:
+            key_data = private_key_path.read_bytes()
+            private_key = serialization.load_pem_private_key(
+                key_data,
+                password=None,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            raise GitError(
+                f"Cannot load the GitHub App private key: {private_key_path}"
+            ) from error
+        if not isinstance(private_key, rsa.RSAPrivateKey):
+            raise GitError("The GitHub App private key must be an RSA private key")
+
+        issued_at = int(time.time()) - 60
+        header = self._jwt_part({"alg": "RS256", "typ": "JWT"})
+        payload = self._jwt_part(
+            {"iat": issued_at, "exp": issued_at + 600, "iss": str(app_id)}
+        )
+        signing_input = f"{header}.{payload}".encode("ascii")
+        signature = private_key.sign(
+            signing_input,
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        encoded_signature = base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
+        return f"{header}.{payload}.{encoded_signature}"
+
+    @staticmethod
+    def _jwt_part(value: dict[str, object]) -> str:
+        encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        return base64.urlsafe_b64encode(encoded).rstrip(b"=").decode()
+
+    @staticmethod
+    def _repository_name(full_name: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name):
+            raise GitError(f"Invalid GitHub repository name: {full_name}")
+        return full_name.split("/", 1)[1]
+
+    def _request(
+        self,
+        client: httpx.Client,
+        access_token: str,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> Any:
+        try:
+            response = client.request(
+                method,
+                f"{self.api_url}{path}",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {access_token}",
+                    "X-GitHub-Api-Version": "2026-03-10",
+                },
+                **kwargs,
+            )
+        except httpx.HTTPError as error:
+            raise GitError(f"GitHub request failed: {error}") from error
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            message = str(payload.get("message", response.text))
+            raise GitError(f"GitHub returned {response.status_code}: {message}")
+        return response.json()
 
 
 class GitHubClient:

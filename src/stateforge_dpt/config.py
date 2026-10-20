@@ -46,6 +46,8 @@ class Settings:
     data_dir: Path
     frontend_dir: Path
     github_client_id: str
+    github_app_id: int | None = None
+    github_app_private_key_path: Path | None = None
     working_directory: Path = field(default_factory=default_data_dir)
     # Programmatic Settings instances opt in explicitly. load_settings() enables
     # MCP for the normal local CLI runtime.
@@ -105,6 +107,22 @@ def load_settings(root: Path | None = None) -> Settings:
             raise ValueError(f"{key} must be positive")
         return configured
 
+    def optional_integer(key: str) -> int | None:
+        configured = value(key, "").strip()
+        if not configured:
+            return None
+        parsed = int(configured)
+        if parsed <= 0:
+            raise ValueError(f"{key} must be positive")
+        return parsed
+
+    def optional_directory_entry(key: str) -> Path | None:
+        configured, base = values.get(key, ("", config_root))
+        if not configured.strip():
+            return None
+        selected = Path(configured).expanduser()
+        return (selected if selected.is_absolute() else base / selected).resolve()
+
     data_dir = directory("STATEFORGE_DPT_DATA_DIR", default_data_dir())
     frontend_dir = directory("STATEFORGE_DPT_FRONTEND_DIR", default_frontend_dir())
 
@@ -123,6 +141,10 @@ def load_settings(root: Path | None = None) -> Settings:
         frontend_dir=frontend_dir,
         github_client_id=value(
             "STATEFORGE_DPT_GITHUB_CLIENT_ID", DEFAULT_GITHUB_CLIENT_ID
+        ),
+        github_app_id=optional_integer("STATEFORGE_DPT_GITHUB_APP_ID"),
+        github_app_private_key_path=optional_directory_entry(
+            "STATEFORGE_DPT_GITHUB_APP_PRIVATE_KEY_PATH"
         ),
         working_directory=directory("STATEFORGE_DPT_WORKING_DIRECTORY", data_dir),
         mcp_enabled=boolean("STATEFORGE_DPT_MCP_ENABLED", True),

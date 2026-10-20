@@ -132,10 +132,12 @@ for the complete tool and safety model.
 
 Collaborate through your repositories, not a separate planning server:
 
-1. Choose **Review & publish** in **Plan editor** to preview and write the next
-   plan revision into your attached clones.
-2. Commit and push the generated files with Git, then merge them into the
-   project's shared **plan source branch**, configured in **Settings**.
+1. Configure the StateForge DPT GitHub App publisher as described in
+   [Configuration](docs/configuration.md#privileged-plan-publication).
+2. Choose **Review & publish** in **Plan editor** to preview the next revision.
+   After confirmation, DPT creates a GitHub-verified App commit containing only
+   the generated plan file and advances the project's protected **plan source
+   branch** directly.
 3. On another computer, install DPT and import the project from any participating
    clone. Attach or clone the remaining repositories; the steps and dependencies
    are already there.
@@ -143,8 +145,10 @@ Collaborate through your repositories, not a separate planning server:
    evidence—even while you remain on a feature branch.
 
 The source branch can be your default branch or another shared parent, such as
-`mvp/implementation`. Publishing writes local files; it does **not** commit,
-push, or merge them. Reconciliation does **not** rebase or change your working
+`mvp/implementation`. Only **Review & publish** uses the App installation
+identity and its ruleset bypass. Issues, pull requests, reviews, reconciliation,
+and every other GitHub operation remain attributed to the connected user.
+Publishing and reconciliation do **not** rebase or change the active working
 tree. Conflicting revisions or unpublished local edits require your resolution.
 
 ## Progress backed by GitHub

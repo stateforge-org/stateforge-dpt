@@ -6,10 +6,8 @@ import base64
 import os
 import shutil
 import subprocess
-import tempfile
-from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -128,6 +126,34 @@ def read_remote_file(
         environment.clear()
 
 
+def fetch_remote_branch(
+    path_value: str,
+    branch: str,
+    access_token: str | None = None,
+) -> str:
+    """Fetch one remote branch and return its commit without changing checkout."""
+    path = Path(path_value).expanduser().resolve()
+    if not path.is_dir():
+        raise GitError(f"Local path does not exist: {path}")
+    _run(path, "check-ref-format", "--branch", branch)
+
+    environment = _git_environment(access_token)
+    try:
+        _run(
+            path,
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            environment=environment,
+            timeout=180,
+        )
+        return _run(path, "rev-parse", f"refs/remotes/origin/{branch}")
+    finally:
+        environment.clear()
+
+
 def is_committed_file(path_value: str, filename: str) -> bool:
     """Compare a file with HEAD and the index without writing Git objects."""
     path = Path(path_value).expanduser().resolve()
@@ -237,152 +263,3 @@ def clone_repository(
         message = completed.stderr.strip() or completed.stdout.strip()
         raise GitError(message or "Repository clone failed")
     return inspect_clone(str(destination), full_name)
-
-
-def publish_plan_branches(
-    path_value: str,
-    filename: str,
-    content: str,
-    update_branch: str,
-    target_branch: str,
-    commit_message: str,
-    author_name: str,
-    author_email: str,
-    access_token: str | None,
-) -> dict[str, str | bool]:
-    """Commit one generated plan on a dedicated branch and merge it upstream.
-
-    Temporary detached worktrees keep the managed checkout and its current branch
-    untouched. The update branch wins merge conflicts in both merge directions,
-    while ordinary non-force pushes still protect concurrent remote changes.
-    """
-    root, _full_name, _origin = clone_identity(path_value)
-    for branch in (update_branch, target_branch):
-        _run(root, "check-ref-format", "--branch", branch)
-    if update_branch == target_branch:
-        raise GitError("The plan update branch must differ from the source branch")
-    for author_value in (author_name, author_email):
-        if not author_value.strip() or "\n" in author_value or "\r" in author_value:
-            raise GitError("Git author identity is invalid")
-
-    relative = PurePosixPath(filename)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-        raise GitError("Generated plan filename must remain inside the repository")
-
-    environment = _git_environment(access_token)
-    added_worktree = False
-    checkout: Path | None = None
-    try:
-        _run(
-            root,
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--prune",
-            "origin",
-            environment=environment,
-            timeout=180,
-        )
-        target_ref = f"refs/remotes/origin/{target_branch}"
-        _run(root, "rev-parse", "--verify", target_ref)
-        update_ref = f"refs/remotes/origin/{update_branch}"
-        try:
-            _run(root, "rev-parse", "--verify", update_ref)
-            update_exists = True
-        except GitError:
-            update_exists = False
-
-        with tempfile.TemporaryDirectory(prefix="stateforge-dpt-publish-") as temporary:
-            checkout = Path(temporary) / "worktree"
-            _run(
-                root,
-                "worktree",
-                "add",
-                "--detach",
-                str(checkout),
-                update_ref if update_exists else target_ref,
-                timeout=180,
-            )
-            added_worktree = True
-            git_identity = (
-                "-c",
-                f"user.name={author_name}",
-                "-c",
-                f"user.email={author_email}",
-            )
-
-            if update_exists:
-                _run(
-                    checkout,
-                    *git_identity,
-                    "merge",
-                    "--no-edit",
-                    "-X",
-                    "ours",
-                    target_ref,
-                    timeout=180,
-                )
-
-            target = checkout.joinpath(*relative.parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8", newline="\n")
-            _run(checkout, "add", "--", relative.as_posix())
-            try:
-                _run(checkout, "diff", "--cached", "--quiet", "--exit-code")
-            except GitError:
-                _run(
-                    checkout,
-                    *git_identity,
-                    "commit",
-                    "-m",
-                    commit_message,
-                    timeout=180,
-                )
-            update_commit = _run(checkout, "rev-parse", "HEAD")
-            _run(
-                checkout,
-                "push",
-                "origin",
-                f"HEAD:refs/heads/{update_branch}",
-                environment=environment,
-                timeout=180,
-            )
-
-            _run(checkout, "checkout", "--detach", target_ref, timeout=180)
-            _run(
-                checkout,
-                *git_identity,
-                "merge",
-                "--no-edit",
-                "--no-ff",
-                "-X",
-                "theirs",
-                update_commit,
-                timeout=180,
-            )
-            target_commit = _run(checkout, "rev-parse", "HEAD")
-            _run(
-                checkout,
-                "push",
-                "origin",
-                f"HEAD:refs/heads/{target_branch}",
-                environment=environment,
-                timeout=180,
-            )
-
-            _run(root, "worktree", "remove", "--force", str(checkout), timeout=180)
-            added_worktree = False
-        return {
-            "update_branch": update_branch,
-            "target_branch": target_branch,
-            "update_branch_created": not update_exists,
-            "update_commit": update_commit,
-            "target_commit": target_commit,
-        }
-    finally:
-        if added_worktree and checkout is not None:
-            with suppress(GitError, subprocess.TimeoutExpired):
-                _run(root, "worktree", "remove", "--force", str(checkout), timeout=180)
-        with suppress(GitError, subprocess.TimeoutExpired):
-            _run(root, "worktree", "prune")
-        environment.clear()
