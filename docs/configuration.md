@@ -62,6 +62,8 @@ STATEFORGE_DPT_WORKING_DIRECTORY=~/Development
 | `STATEFORGE_DPT_WORKING_DIRECTORY` | Parent workspace for clones | Resolved data directory |
 | `STATEFORGE_DPT_FRONTEND_DIR` | Override the browser interface build | Included package assets |
 | `STATEFORGE_DPT_GITHUB_CLIENT_ID` | Use a different GitHub App | Built-in StateForge DPT App |
+| `STATEFORGE_DPT_GITHUB_APP_ID` | App identity used only by Review & publish | Not configured |
+| `STATEFORGE_DPT_GITHUB_APP_PRIVATE_KEY_PATH` | Local PEM used only to mint short-lived installation tokens | Not configured |
 | `STATEFORGE_DPT_MCP_ENABLED` | Serve the local AI-agent interface | `true` |
 | `STATEFORGE_DPT_MCP_PATH` | Streamable HTTP MCP endpoint | `/mcp` |
 | `STATEFORGE_DPT_MCP_MAX_READ_BYTES` | Maximum UTF-8 bytes returned by one repository resource read | `128000` |
@@ -123,15 +125,43 @@ used by reconciliation. Missing permission is isolated to that repository and
 appears as unavailable CI status; it does not prevent the rest of the dashboard
 from loading.
 
+## Privileged plan publication
+
+Ordinary GitHub activity always uses the connected human's Device Flow token.
+Issues, pull requests, reviews, labels, reconciliation, and delivery evidence are
+therefore attributed to that user. Only **Review & publish** authenticates as the
+installed StateForge DPT GitHub App.
+
+To enable publication:
+
+1. Open the StateForge DPT GitHub App settings and generate a private key.
+2. Store the downloaded PEM outside every repository. Restrict its filesystem
+   permissions to the current user where the platform supports that control.
+3. Add the App to the protected plan-source branch ruleset with **Always allow**
+   bypass. Do not grant that bypass to the connected human merely for DPT.
+4. Add the App ID and private-key path to `~/.stateforge-dpt/.env`:
+
+   ```dotenv
+   STATEFORGE_DPT_GITHUB_APP_ID=123456
+   STATEFORGE_DPT_GITHUB_APP_PRIVATE_KEY_PATH=~/.stateforge-dpt/stateforge-dpt.pem
+   ```
+
+At publication time DPT uses the private key only to mint a one-hour App
+installation token restricted to the current repository and `contents: write`.
+It creates a commit containing only the configured generated plan file, omits
+custom author/committer fields so GitHub can apply and verify the App's bot
+signature, verifies that signature before moving the protected branch, and
+never force-pushes. The installation token and private key are never placed in
+Git configuration, command arguments, the database, or browser state.
+
 ## Shared plans and delivery labels
 
 Set the project's **plan source branch** in **Settings**. Reconciliation fetches
 `STATEFORGE_DPT.md` from that branch without checking it out or rebasing the
 developer's branch.
 
-After **Review & publish**, commit and push the generated files and merge them
-into the source branch. Other computers cannot fetch changes that exist only
-in your local working tree or on an unmerged feature branch.
+After **Review & publish**, the verified App commit is already present on the
+source branch. Other computers receive it through normal reconciliation.
 
 Importing a participating clone recreates the complete plan. Only that clone's
 local path is attached immediately; attach or clone the remaining repositories

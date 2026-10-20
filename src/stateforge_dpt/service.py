@@ -16,7 +16,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from stateforge_dpt.database import Database
 from stateforge_dpt.git import (
@@ -26,7 +26,6 @@ from stateforge_dpt.git import (
     clone_repository,
     inspect_clone,
     is_committed_file,
-    publish_plan_branches,
     read_remote_file,
     repository_head,
     tracked_files,
@@ -59,6 +58,21 @@ MAX_CONTEXT_FILE_BYTES = 2 * 1024 * 1024
 MAX_CONTEXT_PACKAGE_BYTES = 512 * 1024
 MAX_VERIFICATION_OUTPUT_BYTES = 20_000
 VERIFICATION_TIMEOUT_SECONDS = 300
+
+
+class PlanPublisher(Protocol):
+    """Privileged boundary used only by Review & publish."""
+
+    def publish(
+        self,
+        local_path: str,
+        full_name: str,
+        target_branch: str,
+        filename: str,
+        content: str,
+        commit_message: str,
+    ) -> dict[str, str | bool | int]:
+        """Publish one generated file without changing the active checkout."""
 
 
 def utc_now() -> str:
@@ -4043,12 +4057,10 @@ class DPTService:
     def publish_project_plan_to_git(
         self,
         project_id: str,
-        access_token: str,
-        github_user_id: int,
+        publisher: PlanPublisher,
         github_login: str,
-        github_name: str | None,
     ) -> dict[str, Any]:
-        """Publish the portable plan through a dedicated branch in every repo."""
+        """Publish the portable plan with the privileged GitHub App identity."""
         project = self.project(project_id)
         repositories = self.repositories(project_id)
         unattached = [
@@ -4062,27 +4074,19 @@ class DPTService:
                 + ", ".join(unattached)
             )
         target_branch = str(project["plan_source_branch"])
-        release = re.sub(r"[^a-z0-9._-]+", "-", str(project["release"]).casefold())
-        release = release.strip("-.") or "release"
-        update_branch = f"{release}/update-dpt-plan"
         prepared = self._prepare_project_file_generation(project_id, force=False)
         revision = int(prepared["revision"])
-        author_name = (github_name or github_login).strip()
-        author_email = f"{github_user_id}+{github_login}@users.noreply.github.com"
         results: list[dict[str, Any]] = []
 
         try:
             for repository, _target in prepared["targets"]:
-                result = publish_plan_branches(
+                result = publisher.publish(
                     str(repository["local_path"]),
+                    str(repository["github_full_name"]),
+                    target_branch,
                     str(project["generated_filename"]),
                     str(prepared["content"]),
-                    update_branch,
-                    target_branch,
                     f"chore(dpt): publish plan revision {revision}",
-                    author_name,
-                    author_email,
-                    access_token,
                 )
                 results.append(
                     {
@@ -4099,17 +4103,17 @@ class DPTService:
                     connection,
                     project_id,
                     "plan.git_publish_failed",
-                    f"Git publication of revision {revision} stopped",
+                    f"App publication of revision {revision} stopped",
                     {
-                        "update_branch": update_branch,
                         "target_branch": target_branch,
                         "completed_repositories": completed,
+                        "results": results,
                         "error": str(error),
                     },
                     github_login,
                 )
             raise DPTError(
-                f"Git publication stopped after: {completed}. {error}"
+                f"App publication stopped after: {completed}. {error}"
             ) from error
 
         generated = self._record_project_file_generation(
@@ -4119,19 +4123,19 @@ class DPTService:
             remote_branch=target_branch,
             activity_kind="plan.git_published",
             activity_message=(
-                f"Published revision {revision} through {update_branch} into "
-                f"{target_branch} across {len(results)} repositories"
+                f"Published revision {revision} as verified StateForge DPT App "
+                f"commits to {target_branch} across {len(results)} repositories"
             ),
             activity_details={
-                "update_branch": update_branch,
                 "target_branch": target_branch,
+                "publisher": "stateforge-dpt-app",
                 "results": results,
             },
         )
         return {
             **generated,
-            "update_branch": update_branch,
             "target_branch": target_branch,
+            "publisher": "stateforge-dpt-app",
             "results": results,
         }
 

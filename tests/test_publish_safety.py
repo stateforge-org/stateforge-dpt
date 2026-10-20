@@ -531,7 +531,7 @@ def test_explicit_force_still_requires_an_opt_in(
 
 
 def test_git_publication_records_remote_revision_without_touching_active_checkout(
-    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+    workspace: Workspace,
 ) -> None:
     workspace.edit_title("[TASK][MVP] Publish through Git")
     before = workspace.plan_path.read_bytes()
@@ -540,53 +540,45 @@ def test_git_publication_records_remote_revision_without_touching_active_checkou
     ]
     calls: list[dict[str, object]] = []
 
-    def publish_stub(
-        path_value: str,
-        filename: str,
-        content: str,
-        update_branch: str,
-        target_branch: str,
-        commit_message: str,
-        author_name: str,
-        author_email: str,
-        access_token: str | None,
-    ) -> dict[str, str | bool]:
-        calls.append(
-            {
-                "path": path_value,
-                "filename": filename,
-                "content": content,
-                "update_branch": update_branch,
+    class PublisherStub:
+        def publish(
+            self,
+            local_path: str,
+            full_name: str,
+            target_branch: str,
+            filename: str,
+            content: str,
+            commit_message: str,
+        ) -> dict[str, str | bool | int]:
+            calls.append(
+                {
+                    "path": local_path,
+                    "full_name": full_name,
+                    "filename": filename,
+                    "content": content,
+                    "target_branch": target_branch,
+                    "commit_message": commit_message,
+                }
+            )
+            return {
+                "publisher": "stateforge-dpt-app",
                 "target_branch": target_branch,
-                "commit_message": commit_message,
-                "author_name": author_name,
-                "author_email": author_email,
-                "access_token": access_token,
+                "target_commit": "b" * 40,
+                "signature_verified": True,
             }
-        )
-        return {
-            "update_branch": update_branch,
-            "target_branch": target_branch,
-            "update_branch_created": True,
-            "update_commit": "a" * 40,
-            "target_commit": "b" * 40,
-        }
 
-    monkeypatch.setattr("stateforge_dpt.service.publish_plan_branches", publish_stub)
     result = workspace.app.state.service.publish_project_plan_to_git(
         workspace.project_id,
-        "token",
-        123,
+        PublisherStub(),
         "maintainer",
-        "Maintainer",
     )
 
     assert result["revision"] == 2
-    assert result["update_branch"] == "mvp/update-dpt-plan"
+    assert result["publisher"] == "stateforge-dpt-app"
     assert result["target_branch"] == "mvp/implementation"
     assert len(calls) == 1
     assert "Publish through Git" in str(calls[0]["content"])
-    assert calls[0]["author_email"] == "123+maintainer@users.noreply.github.com"
+    assert calls[0]["full_name"] == "stateforge-org/stateforge-protocol"
     assert workspace.plan_path.read_bytes() == before
     assert (
         workspace.app.state.service.repository(workspace.repository_id)[
@@ -601,7 +593,7 @@ def test_git_publication_records_remote_revision_without_touching_active_checkou
 
 
 def test_git_publication_preserves_uncommitted_dpt_generated_snapshot(
-    workspace: Workspace, monkeypatch: pytest.MonkeyPatch
+    workspace: Workspace,
 ) -> None:
     workspace.edit_title("[TASK][MVP] Generated local draft")
     generated = workspace.publish()
@@ -612,33 +604,28 @@ def test_git_publication_preserves_uncommitted_dpt_generated_snapshot(
         "last_generated_digest"
     ]
 
-    def publish_stub(
-        _path_value: str,
-        _filename: str,
-        _content: str,
-        update_branch: str,
-        target_branch: str,
-        _commit_message: str,
-        _author_name: str,
-        _author_email: str,
-        _access_token: str | None,
-    ) -> dict[str, str | bool]:
-        return {
-            "update_branch": update_branch,
-            "target_branch": target_branch,
-            "update_branch_created": True,
-            "update_commit": "a" * 40,
-            "target_commit": "b" * 40,
-        }
+    class PublisherStub:
+        def publish(
+            self,
+            _local_path: str,
+            _full_name: str,
+            target_branch: str,
+            _filename: str,
+            _content: str,
+            _commit_message: str,
+        ) -> dict[str, str | bool | int]:
+            return {
+                "publisher": "stateforge-dpt-app",
+                "target_branch": target_branch,
+                "target_commit": "b" * 40,
+                "signature_verified": True,
+            }
 
-    monkeypatch.setattr("stateforge_dpt.service.publish_plan_branches", publish_stub)
     workspace.edit_title("[TASK][MVP] Published Git draft")
     published = workspace.app.state.service.publish_project_plan_to_git(
         workspace.project_id,
-        "token",
-        123,
+        PublisherStub(),
         "maintainer",
-        "Maintainer",
     )
 
     assert published["revision"] == 3

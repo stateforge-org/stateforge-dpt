@@ -9,13 +9,31 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from stateforge_dpt import cli, config
+from stateforge_dpt import __version__, cli, config
 from stateforge_dpt.app import create_app
 from stateforge_dpt.codex_integration import (
     CodexIntegrationError,
     install_codex_integration,
 )
 from stateforge_dpt.terminal import print_startup_banner, startup_banner
+
+
+def test_package_metadata_and_runtime_versions_match(tmp_path: Path) -> None:
+    project = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    app = create_app(
+        config.Settings(
+            host="127.0.0.1",
+            port=8463,
+            data_dir=tmp_path / "data",
+            frontend_dir=tmp_path / "frontend",
+            github_client_id=config.DEFAULT_GITHUB_CLIENT_ID,
+        )
+    )
+
+    assert project["version"] == __version__
+    assert app.version == __version__
 
 
 @pytest.fixture
@@ -63,7 +81,9 @@ def test_user_config_paths_are_relative_to_config_file(runtime):
     (config_directory / ".env").write_text(
         "STATEFORGE_DPT_DATA_DIR=data\n"
         "STATEFORGE_DPT_WORKING_DIRECTORY=clones\n"
-        "STATEFORGE_DPT_FRONTEND_DIR=ui\n",
+        "STATEFORGE_DPT_FRONTEND_DIR=ui\n"
+        "STATEFORGE_DPT_GITHUB_APP_ID=123456\n"
+        "STATEFORGE_DPT_GITHUB_APP_PRIVATE_KEY_PATH=keys/dpt.pem\n",
         encoding="utf-8",
     )
 
@@ -72,6 +92,8 @@ def test_user_config_paths_are_relative_to_config_file(runtime):
     assert resolved.data_dir == config_directory / "data"
     assert resolved.working_directory == config_directory / "clones"
     assert resolved.frontend_dir == config_directory / "ui"
+    assert resolved.github_app_id == 123456
+    assert resolved.github_app_private_key_path == config_directory / "keys/dpt.pem"
 
 
 def test_environment_overrides_user_config_without_using_cwd(runtime, monkeypatch):

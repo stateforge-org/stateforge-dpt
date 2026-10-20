@@ -8,7 +8,6 @@ import {
   FileCode2,
   FolderGit2,
   GitBranch,
-  GitMerge,
   Layers3,
   Pencil,
   Plus,
@@ -241,11 +240,6 @@ export function PlanEditorPage({
     (repository) => repository.local_path,
   );
   const allRepositoriesAttached = attachedRepositories.length === dashboard.repositories.length;
-  const releaseBranch = dashboard.project.release
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^[-.]+|[-.]+$/g, "") || "release";
-  const updateBranch = `${releaseBranch}/update-dpt-plan`;
   const pendingProposalCount = proposals.filter(
     (proposal) => proposal.status === "awaiting_review",
   ).length;
@@ -291,6 +285,7 @@ export function PlanEditorPage({
           setSelectedSourceId(source.repository_id);
           setResolveOpen(true);
         }}
+        planSourceBranch={dashboard.project.plan_source_branch}
         status={syncStatus}
         syncing={syncing}
       />
@@ -415,11 +410,11 @@ export function PlanEditorPage({
                 </div>
               </section>
               <section className="plan-git-publish-option">
-                <GitMerge />
+                <ShieldCheck />
                 <div>
-                  <strong>Update the shared canonical plan through Git</strong>
-                  <span>Commit <code>{dashboard.project.generated_filename}</code> to <code>{updateBranch}</code> in every repository, push it, then merge it into <code>{dashboard.project.plan_source_branch}</code>. Plan-branch content wins merge conflicts.</span>
-                  <small>Temporary worktrees preserve every currently checked-out developer branch. GitHub authentication and all local clones are required.</small>
+                  <strong>Publish the shared canonical plan with the StateForge DPT App</strong>
+                  <span>Publish only <code>{dashboard.project.generated_filename}</code> as a GitHub-verified App commit directly to <code>{dashboard.project.plan_source_branch}</code> in every repository.</span>
+                  <small>The App token is created only for publication and scoped to repository contents. Active developer branches and worktrees stay unchanged.</small>
                 </div>
               </section>
             </>
@@ -435,7 +430,7 @@ export function PlanEditorPage({
                   <WandSparkles />{publishing === "local" ? "Writing…" : "Write local copies"}
                 </button>
                 <button className="button button-primary" disabled={Boolean(publishing) || !allRepositoriesAttached || !canPublishGit} onClick={publishThroughGit} title={!canPublishGit ? "Connect GitHub before publishing" : !allRepositoriesAttached ? "Attach every managed repository before publishing" : undefined} type="button">
-                  <GitMerge />{publishing === "git" ? "Committing, pushing & merging…" : `Commit, push & merge revision ${dashboard.project.revision + 1}`}
+                  <ShieldCheck />{publishing === "git" ? "Publishing verified App commits…" : `Publish verified revision ${dashboard.project.revision + 1}`}
                 </button>
               </>
             )}
@@ -562,12 +557,14 @@ function GitPlanStatus({
   loading,
   onImport,
   onResolve,
+  planSourceBranch,
   status,
   syncing,
 }: {
   loading: boolean;
   onImport: (repositoryId: string) => void;
   onResolve: (source: PlanSource) => void;
+  planSourceBranch: string;
   status: PlanSyncStatus | null;
   syncing: boolean;
 }) {
@@ -616,7 +613,7 @@ function GitPlanStatus({
         <GitBranch />
         <div>
           <strong>Unpublished plan edits on this computer</strong>
-          <span>Review and publish to write the next revision into every attached clone, then commit and push those files with Git.</span>
+          <span>Review and publish to create verified StateForge DPT App commits on <code>{planSourceBranch}</code> without changing active developer branches.</span>
         </div>
       </section>
     );

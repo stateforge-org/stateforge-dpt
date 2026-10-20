@@ -19,10 +19,16 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
+from stateforge_dpt import __version__
 from stateforge_dpt.config import Settings, load_settings
 from stateforge_dpt.database import Database
 from stateforge_dpt.git import GitError
-from stateforge_dpt.github import ArtifactDelta, GitHubClient, GitHubError
+from stateforge_dpt.github import (
+    ArtifactDelta,
+    GitHubAppPlanPublisher,
+    GitHubClient,
+    GitHubError,
+)
 from stateforge_dpt.mcp_server import create_mcp_server
 from stateforge_dpt.models import (
     AttachCloneRequest,
@@ -101,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     service = DPTService(database, SecretStore(resolved.data_dir))
     proposals = PlanProposalService(database, service)
     github = GitHubClient(resolved)
+    plan_publisher = GitHubAppPlanPublisher(resolved)
     reconciliation_tasks: dict[str, asyncio.Task[dict[str, object]]] = {}
     reconciliation_reporters: dict[str, set[ReconciliationReporter]] = {}
     reconciliation_progress: dict[str, dict[str, object]] = {}
@@ -169,7 +176,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="StateForge DPT",
-        version="0.1.12",
+        version=__version__,
         docs_url="/api/docs",
         redoc_url=None,
         lifespan=lifespan,
@@ -177,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.service = service
     app.state.github = github
+    app.state.plan_publisher = plan_publisher
     app.state.proposals = proposals
     app.state.mcp_server = mcp_server
 
@@ -1856,10 +1864,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await asyncio.to_thread(
             service.publish_project_plan_to_git,
             project_id,
-            str(current["access_token"]),
-            int(str(current["github_user_id"])),
+            plan_publisher,
             str(current["github_login"]),
-            str(current["github_name"]) if current.get("github_name") else None,
         )
 
     @app.get("/api/projects/{project_id}/plan-proposals")
