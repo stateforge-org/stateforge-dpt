@@ -321,6 +321,12 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .repository-security-card-not_configured { border-color: #cfd7e2; color: #66758a; background: #f4f6f8; }
 .repository-security-card-unavailable { border-color: #e9b4b4; color: #9b4040; background: #fdf0f0; }
 .security-summary-grid { display: grid; grid-template-columns: 1.35fr repeat(5,minmax(0,1fr)); gap: 10px; margin-bottom: 14px; }
+.security-refresh-progress { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 10px; margin-bottom: 14px; padding: 11px 13px; border: 1px solid #a9c8ff; border-radius: 11px; color: #285cae; background: #eef5ff; }
+.security-refresh-progress > svg { width: 18px; }
+.security-refresh-progress > div { display: flex; flex-direction: column; gap: 2px; }
+.security-refresh-progress strong { font-size: 10px; }
+.security-refresh-progress span { color: #607ba8; font-size: 9px; }
+.security-refresh-progress b { font-size: 9px; }
 .security-summary-grid article { min-width: 0; padding: 14px; border: 1px solid #dce4ed; border-radius: 12px; background: #fff; }
 .security-summary-grid span, .security-summary-grid strong, .security-summary-grid em { display: block; }
 .security-summary-grid span { color: #7b899d; font-size: 9px; font-weight: 800; text-transform: capitalize; }
@@ -382,14 +388,27 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .security-empty svg { width: 25px; height: 25px; color: #7891b4; }
 .security-empty strong { color: #35465d; font-size: 11px; }
 .security-empty span { font-size: 9px; }
-.security-inventory > div:first-child { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin: 10px 0 13px; }
-.security-inventory > div:first-child span { padding: 12px; border-radius: 9px; background: #f5f7fa; }
-.security-inventory strong, .security-inventory small { display: block; }
-.security-inventory strong { color: #26364b; font-size: 18px; }
-.security-inventory small { margin-top: 3px; color: #8190a4; font-size: 9px; }
-.security-coverage { height: 7px; overflow: hidden; border-radius: 999px; background: #edf1f5; }
-.security-coverage i { display: block; height: 100%; border-radius: inherit; background: #15966b; }
-.security-inventory p { margin: 8px 0 5px; color: #758398; font-size: 9px; }
+.security-inventory { display: grid; gap: 12px; }
+.security-inventory-header, .security-inventory-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.security-inventory-header > div { min-width: 0; }
+.security-inventory-header > div > strong { display: block; color: #26364b; font-size: 13px; }
+.security-inventory-header > div > span { display: block; margin-top: 3px; color: #7b899c; font-size: 9px; }
+.security-inventory-toolbar { padding: 9px 10px; border: 1px solid #e1e7ee; border-radius: 10px; background: #f8fafc; }
+.security-inventory-toolbar label { min-width: 0; flex: 1; display: flex; align-items: center; gap: 7px; }
+.security-inventory-toolbar label svg { width: 14px; color: #70839b; }
+.security-inventory-toolbar input { width: 100%; border: 0; outline: 0; color: #304157; background: transparent; font: inherit; font-size: 10px; }
+.security-inventory-toolbar > span { color: #7c899a; font-size: 9px; white-space: nowrap; }
+.security-inventory-toolbar > span strong { color: #2e4057; }
+.security-sbom-table-wrap { max-height: 430px; border: 1px solid #e3e8ef; border-radius: 10px; }
+.security-sbom-table thead { position: sticky; z-index: 1; top: 0; background: #f7f9fc; }
+.security-sbom-table td:first-child { min-width: 155px; }
+.security-sbom-table td:last-child { min-width: 280px; max-width: 460px; }
+.security-sbom-identity { display: block; overflow-wrap: anywhere; white-space: normal; }
+.security-empty-compact { min-height: 110px; }
+.security-sbom-raw { overflow: hidden; border: 1px solid #e1e7ee; border-radius: 10px; background: #f8fafc; }
+.security-sbom-raw summary { padding: 10px 12px; color: #40536b; font-size: 9px; font-weight: 800; cursor: pointer; }
+.security-sbom-raw pre { max-height: 420px; margin: 0; overflow: auto; padding: 13px; border-top: 1px solid #e1e7ee; color: #33455c; background: #f4f7fa; font-size: 9px; line-height: 1.55; }
+.sr-only { position: absolute !important; width: 1px !important; height: 1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; }
 .security-provenance { display: grid; grid-template-columns: 1.1fr 2fr; align-items: center; gap: 20px; }
 .security-provenance > div { display: flex; align-items: center; gap: 10px; }
 .security-provenance > div > svg { width: 22px; color: #4b6fae; }

@@ -14,7 +14,9 @@ import { api } from "./api";
 import type {
   ProjectSecurity,
   Repository,
+  RepositorySbomDocument,
   RepositorySecurityDetails,
+  SbomComponent,
   SecurityFinding,
   SecurityState,
 } from "./types";
@@ -65,8 +67,11 @@ export function RepositorySecurityStrip({
         {repositories.map((repository) => {
           const evidence = repository.security;
           const findings = evidence.dependency_findings + evidence.codeql_findings;
+          const qualifier = evidence.evidence_qualifiers?.length
+            ? ` · ${evidence.evidence_qualifiers.join(" · ")}`
+            : "";
           const detail = evidence.state === "findings"
-            ? `${evidence.dependency_findings} dependency · ${evidence.codeql_findings} CodeQL`
+            ? `${evidence.dependency_findings} dependency · ${evidence.codeql_findings} CodeQL${qualifier}`
             : evidence.message || `${timeAgo(evidence.refreshed_at)} · ${evidence.observed_commit_sha?.slice(0, 7) || "head unknown"}`;
           return (
             <button
@@ -86,8 +91,8 @@ export function RepositorySecurityStrip({
   );
 }
 
-function FindingTable({ findings, empty }: { findings: SecurityFinding[]; empty: string }) {
-  if (!findings.length) return <div className="security-empty"><ShieldCheck /><strong>{empty}</strong><span>No matching open findings are present in the current evidence.</span></div>;
+function FindingTable({ findings, empty, emptyDescription }: { findings: SecurityFinding[]; empty: string; emptyDescription: string }) {
+  if (!findings.length) return <div className="security-empty"><ShieldCheck /><strong>{empty}</strong><span>{emptyDescription}</span></div>;
   return (
     <div className="security-table-wrap">
       <table className="security-table">
@@ -157,6 +162,7 @@ export function VulnerabilitiesPage({ projectId }: { projectId: string }) {
     <>
       <PageHeader eyebrow="Security evidence" title="Vulnerabilities" description="Dependency and CodeQL findings tied to each repository's exact plan-source commit." actions={<button className="button button-primary" disabled={refreshing || data.refresh.state === "running"} onClick={refresh}><RefreshCw className={data.refresh.state === "running" ? "spin-icon" : undefined} />{data.refresh.state === "running" ? "Assessing…" : "Refresh evidence"}</button>} />
       {error && <ErrorBanner message={error} />}
+      {data.refresh.state === "running" && <section aria-live="polite" className="security-refresh-progress" role="status"><RefreshCw className="spin-icon" /><div><strong>{data.refresh.title || "Refreshing security evidence"}</strong><span>{data.refresh.detail || "Querying exact-head repository evidence."}</span></div><b>{data.refresh.repository_index || 0} / {data.refresh.repository_count || data.summary.repositories}</b></section>}
       <section className="security-summary-grid">
         <article><span>Repositories assessed</span><strong>{data.summary.fully_assessed}<small> of {data.summary.repositories}</small></strong><em>{data.summary.with_findings} with findings</em></article>
         {(["critical", "high", "medium", "low", "unknown"] as const).map((severity) => <article key={severity}><span>{severity}</span><strong className={`security-count-${severity}`}>{counts[severity] || 0}</strong><em>Open findings</em></article>)}
@@ -167,12 +173,12 @@ export function VulnerabilitiesPage({ projectId }: { projectId: string }) {
           {data.repositories.map((item) => <button className={`${item.repository_id === repository?.repository_id ? "selected " : ""}security-repository-card security-repository-card-${item.security.state}`} key={item.repository_id} onClick={() => setSelected(item.repository_id)} type="button"><span>{stateIcon(item.security.state)}</span><strong>{item.alias}</strong><b>{stateLabels[item.security.state]}</b><small>{item.security.observed_commit_sha?.slice(0, 7) || "Head not assessed"}</small></button>)}
         </div>
       </section>
-      {repository && <RepositoryEvidence repository={repository} tab={tab} onTab={setTab} />}
+      {repository && <RepositoryEvidence projectId={projectId} repository={repository} tab={tab} onTab={setTab} />}
     </>
   );
 }
 
-function RepositoryEvidence({ repository, tab, onTab }: { repository: RepositorySecurityDetails; tab: "dependency" | "codeql" | "inventory"; onTab: (tab: "dependency" | "codeql" | "inventory") => void }) {
+function RepositoryEvidence({ projectId, repository, tab, onTab }: { projectId: string; repository: RepositorySecurityDetails; tab: "dependency" | "codeql" | "inventory"; onTab: (tab: "dependency" | "codeql" | "inventory") => void }) {
   const evidence = repository.security;
   return (
     <>
@@ -181,19 +187,80 @@ function RepositoryEvidence({ repository, tab, onTab }: { repository: Repository
       </section>
       <section className="security-findings-panel">
         <header><div><h2>Findings</h2><p>Open findings grouped by evidence source.</p></div><div className="security-tabs"><button className={tab === "dependency" ? "active" : ""} onClick={() => onTab("dependency")} type="button">Dependencies <span>{repository.dependency_findings.length}</span></button><button className={tab === "codeql" ? "active" : ""} onClick={() => onTab("codeql")} type="button">CodeQL <span>{repository.codeql_findings.length}</span></button><button className={tab === "inventory" ? "active" : ""} onClick={() => onTab("inventory")} type="button">SBOM inventory</button></div></header>
-        {tab === "dependency" && <FindingTable findings={repository.dependency_findings} empty="No known dependency findings" />}
-        {tab === "codeql" && <FindingTable findings={repository.codeql_findings} empty="No open CodeQL alerts" />}
-        {tab === "inventory" && <SbomInventory repository={repository} />}
+        {tab === "dependency" && <FindingTable findings={repository.dependency_findings} empty={evidence.dependency_status.complete ? "No known dependency findings" : "Dependency evidence is incomplete"} emptyDescription={evidence.dependency_status.complete ? "No matching open findings are present in the current OSV evidence." : evidence.dependency_status.message || "Some dependency components could not be assessed."} />}
+        {tab === "codeql" && <FindingTable findings={repository.codeql_findings} empty={evidence.codeql_status.complete ? "No open CodeQL alerts" : "CodeQL evidence is incomplete"} emptyDescription={evidence.codeql_status.complete ? "No open alerts are present in the current exact-head analysis." : evidence.codeql_status.message || "An exact-head CodeQL result is not available."} />}
+        {tab === "inventory" && <SbomInventory projectId={projectId} repository={repository} />}
       </section>
       <section className="security-provenance"><div><PackageSearch /><span><strong>Evidence provenance</strong><small>The immutable inputs behind this status.</small></span></div><dl><div><dt>Source commit</dt><dd><code>{evidence.observed_commit_sha?.slice(0, 12) || "Unavailable"}</code></dd></div><div><dt>SBOM</dt><dd>{repository.sbom ? `${repository.sbom.format} ${repository.sbom.spec_version}` : "Unavailable"}</dd></div><div><dt>Dependency material</dt><dd><code>{repository.sbom?.dependency_material_digest.slice(0, 12) || "Unavailable"}</code></dd></div><div><dt>Generator</dt><dd>{repository.sbom ? `${repository.sbom.adapter} v${repository.sbom.adapter_version} · ${repository.sbom.tool} ${repository.sbom.tool_version}${repository.sbom.generator.duration_ms !== undefined ? ` · ${repository.sbom.generator.duration_ms} ms` : ""}` : "Unavailable"}</dd></div><div><dt>OSV evidence</dt><dd>{evidence.dependency_status.state.replaceAll("_", " ")}</dd></div><div><dt>CodeQL evidence</dt><dd>{evidence.codeql_status.state.replaceAll("_", " ")}</dd></div></dl></section>
     </>
   );
 }
 
-function SbomInventory({ repository }: { repository: RepositorySecurityDetails }) {
+function componentLicenses(component: SbomComponent) {
+  return (component.licenses || [])
+    .map((value) => value.expression || value.license?.id || value.license?.name)
+    .filter(Boolean)
+    .join(", ") || "—";
+}
+
+export function SbomInventoryView({ sbom }: { sbom: RepositorySbomDocument }) {
+  const [query, setQuery] = useState("");
+  const components = sbom.document.components || [];
+  const normalized = query.trim().toLocaleLowerCase();
+  const visible = normalized
+    ? components.filter((component) => [component.name, component.version, component.type, component.scope, component.purl, component["bom-ref"], componentLicenses(component)].some((value) => String(value || "").toLocaleLowerCase().includes(normalized)))
+    : components;
+  const root = sbom.document.metadata?.component;
+
+  function download() {
+    const blob = new Blob([JSON.stringify(sbom.document, null, 2)], { type: "application/vnd.cyclonedx+json" });
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement("a");
+    link.href = url;
+    link.download = `${sbom.alias}-${sbom.observed_commit_sha.slice(0, 12)}-sbom.cdx.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="security-inventory">
+      <header className="security-inventory-header">
+        <div><strong>{root?.name || sbom.alias}</strong><span>{root?.version || "Version not declared"} · CycloneDX {sbom.spec_version} · commit <code>{sbom.observed_commit_sha.slice(0, 12)}</code></span></div>
+        <button className="button button-secondary button-small" onClick={download} type="button">Download CycloneDX</button>
+      </header>
+      <div className="security-inventory-toolbar">
+        <label><PackageSearch /><span className="sr-only">Filter SBOM components</span><input onChange={(event) => setQuery(event.target.value)} placeholder="Filter by package, version, type, license, or purl" type="search" value={query} /></label>
+        <span><strong>{visible.length}</strong> of {components.length} components</span>
+      </div>
+      <div className="security-table-wrap security-sbom-table-wrap">
+        <table className="security-table security-sbom-table">
+          <thead><tr><th>Component</th><th>Version</th><th>Type</th><th>Scope</th><th>License</th><th>Package URL / BOM reference</th></tr></thead>
+          <tbody>
+            {visible.map((component, index) => <tr key={component["bom-ref"] || component.purl || `${component.name}-${component.version}-${index}`}><td><strong>{component.name}</strong></td><td><code>{component.version || "—"}</code></td><td>{component.type || "—"}</td><td>{component.scope || "required"}</td><td>{componentLicenses(component)}</td><td><code className="security-sbom-identity">{component.purl || component["bom-ref"] || "—"}</code></td></tr>)}
+          </tbody>
+        </table>
+        {!visible.length && <div className="security-empty security-empty-compact"><PackageSearch /><strong>No matching components</strong><span>Try a different package, version, type, license, or Package URL.</span></div>}
+      </div>
+      <details className="security-sbom-raw"><summary>View raw CycloneDX JSON</summary><pre>{JSON.stringify(sbom.document, null, 2)}</pre></details>
+    </div>
+  );
+}
+
+function SbomInventory({ projectId, repository }: { projectId: string; repository: RepositorySecurityDetails }) {
+  const [sbom, setSbom] = useState<RepositorySbomDocument | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSbom(null);
+    setError(null);
+    if (!repository.sbom) return;
+    api<RepositorySbomDocument>(`/api/projects/${projectId}/security/repositories/${repository.repository_id}/sbom`)
+      .then(setSbom)
+      .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "The SBOM could not be loaded"));
+  }, [projectId, repository.repository_id, repository.sbom]);
+
   if (!repository.sbom) return <div className="security-empty"><PackageSearch /><strong>No supported SBOM</strong><span>This repository has no validated dependency inventory yet.</span></div>;
-  const total = repository.sbom.component_count;
-  const queryable = repository.sbom.queryable_component_count;
-  const percent = total ? Math.round((queryable / total) * 100) : 0;
-  return <div className="security-inventory"><div><span><strong>{total}</strong><small>Total components</small></span><span><strong>{queryable}</strong><small>Queryable components</small></span><span><strong>{percent}%</strong><small>OSV coverage</small></span></div><div className="security-coverage" role="progressbar" aria-label="Queryable SBOM component coverage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ width: `${percent}%` }} /></div><p>{queryable === total ? "Every component has a versioned Package URL." : `${total - queryable} components are visible but cannot be queried reliably.`}</p></div>;
+  if (error) return <ErrorBanner message={error} />;
+  if (!sbom) return <Loading label="Loading complete SBOM inventory" />;
+  return <SbomInventoryView sbom={sbom} />;
 }

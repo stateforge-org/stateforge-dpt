@@ -324,6 +324,8 @@ class SecurityEvidenceService:
                     "refreshed_at": None,
                     "coverage": {},
                     "message": "Security evidence has not been assessed yet",
+                    "fresh": False,
+                    "evidence_qualifiers": ["pending"],
                     "dependency_status": {
                         "state": "pending",
                         "current": False,
@@ -342,12 +344,29 @@ class SecurityEvidenceService:
             codeql = json.loads(str(row["codeql_status_json"]))
             state = str(row["state"])
             refreshed_at = str(row["refreshed_at"])
-            if (
-                state == "no_known_findings"
-                and datetime.now(UTC) - datetime.fromisoformat(refreshed_at)
+            expired = (
+                datetime.now(UTC) - datetime.fromisoformat(refreshed_at)
                 >= ASSESSMENT_TTL
+            )
+            qualifiers: list[str] = []
+            if expired:
+                qualifiers.append("stale")
+                dependency = {
+                    **dependency,
+                    "state": "stale",
+                    "current": False,
+                    "complete": False,
+                    "message": "OSV evidence has expired and needs refreshing",
+                }
+                if state == "no_known_findings":
+                    state = "stale"
+            if state == "findings" and not (
+                dependency.get("current")
+                and dependency.get("complete")
+                and codeql.get("current")
+                and codeql.get("complete")
             ):
-                state = "stale"
+                qualifiers.append("partial")
             result[repository_id] = {
                 "branch": str(row["plan_source_branch"]),
                 "state": state,
@@ -360,6 +379,8 @@ class SecurityEvidenceService:
                 "message": dependency.get("message") or codeql.get("message"),
                 "dependency_status": dependency,
                 "codeql_status": codeql,
+                "fresh": not expired,
+                "evidence_qualifiers": qualifiers,
             }
         return result
 
@@ -399,11 +420,12 @@ class SecurityEvidenceService:
                         """,
                         (repository_id, head),
                     ).fetchone()
-                if (
-                    sbom
-                    and summaries[repository_id]["dependency_status"]["state"]
-                    == "current"
-                ):
+                if sbom and summaries[repository_id]["dependency_status"]["state"] in {
+                    "current",
+                    "partial",
+                    "stale",
+                    "unavailable",
+                }:
                     assessment = connection.execute(
                         """
                         SELECT * FROM repository_vulnerability_assessments
@@ -456,6 +478,9 @@ class SecurityEvidenceService:
                 "repositories": len(result),
                 "fully_assessed": sum(
                     item["security"]["state"] in {"no_known_findings", "findings"}
+                    and item["security"]["fresh"]
+                    and item["security"]["dependency_status"]["complete"]
+                    and item["security"]["codeql_status"]["complete"]
                     for item in result
                 ),
                 "with_findings": sum(
@@ -464,6 +489,38 @@ class SecurityEvidenceService:
                 "severity_counts": counts,
             },
             "repositories": result,
+        }
+
+    def sbom_document(
+        self, project_id: str, repository_id: str
+    ) -> dict[str, Any] | None:
+        """Return the current validated CycloneDX document for one repository."""
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT s.*, r.alias, r.github_full_name
+                FROM repository_security_status status
+                JOIN repositories r ON r.repository_id = status.repository_id
+                JOIN repository_security_sboms s
+                  ON s.repository_id = status.repository_id
+                 AND s.observed_commit_sha = status.observed_commit_sha
+                WHERE r.project_id = ? AND r.repository_id = ?
+                ORDER BY s.validated_at DESC LIMIT 1
+                """,
+                (project_id, repository_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "repository_id": repository_id,
+            "alias": str(row["alias"]),
+            "github_full_name": str(row["github_full_name"]),
+            "observed_commit_sha": str(row["observed_commit_sha"]),
+            "sha256": str(row["sbom_sha256"]),
+            "format": str(row["sbom_format"]),
+            "spec_version": str(row["sbom_spec_version"]),
+            "generated_at": str(row["generated_at"]),
+            "document": json.loads(str(row["sbom_json"])),
         }
 
     async def refresh_project(
@@ -607,16 +664,35 @@ class SecurityEvidenceService:
                             timestamp,
                         )
             dependency_findings, osv_coverage = await self.osv.assess(sbom.document)
-            coverage = {**sbom.coverage, **osv_coverage}
+            coverage = {
+                **sbom.coverage,
+                "osv_queryable_components": int(
+                    osv_coverage.get("queryable_components", 0)
+                ),
+                "queried_components": int(osv_coverage.get("queried_components", 0)),
+                "failed_queries": int(osv_coverage.get("failed_queries", 0)),
+                "withdrawn_advisories": int(
+                    osv_coverage.get("withdrawn_advisories", 0)
+                ),
+            }
             complete = (
                 sbom.queryable_component_count == sbom.third_party_component_count
                 and int(osv_coverage.get("queried_components", 0))
                 == sbom.queryable_component_count
                 and int(osv_coverage.get("failed_queries", 0)) == 0
             )
+            failed_queries = int(osv_coverage.get("failed_queries", 0))
+            queried_components = int(osv_coverage.get("queried_components", 0))
+            dependency_state = (
+                "current"
+                if complete
+                else "unavailable"
+                if failed_queries and not queried_components
+                else "partial"
+            )
             dependency_status = {
-                "state": "current",
-                "current": True,
+                "state": dependency_state,
+                "current": dependency_state != "unavailable",
                 "complete": complete,
                 "configured": True,
                 "message": None
@@ -659,7 +735,7 @@ class SecurityEvidenceService:
                 "configured": False,
                 "message": str(error),
             }
-        except (SbomError, OsvError, httpx.HTTPError) as error:
+        except (GitHubError, SbomError, OsvError, httpx.HTTPError) as error:
             dependency_status = {
                 "state": "unavailable",
                 "current": False,
@@ -761,6 +837,23 @@ class SecurityEvidenceService:
                         "complete": False,
                         "configured": False,
                         "message": "CodeQL has no analysis for this repository",
+                    },
+                    [],
+                    [],
+                )
+            if error.status_code == 403:
+                return (
+                    {
+                        "state": "unavailable",
+                        "current": False,
+                        "complete": False,
+                        "configured": True,
+                        "message": (
+                            "CodeQL permission is unavailable. Grant the StateForge "
+                            "DPT GitHub App read-only access to Code scanning alerts, "
+                            "approve the updated installation permissions, and "
+                            "reconnect."
+                        ),
                     },
                     [],
                     [],

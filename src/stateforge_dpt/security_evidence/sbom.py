@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ MAX_EXTRACTED_BYTES = 500 * 1024 * 1024
 MAX_ARCHIVE_FILES = 50_000
 MAX_ARCHIVE_PATH_BYTES = 4_096
 MAX_SBOM_BYTES = 2 * 1024 * 1024
+MAX_GENERATOR_STDERR_BYTES = 64 * 1024
+MAX_VERSION_OUTPUT_BYTES = 4 * 1024
 GENERATOR_TIMEOUT_SECONDS = 120
 ADAPTER_ID = "uv-lock-cyclonedx-v1"
 ADAPTER_VERSION = 1
@@ -90,6 +93,85 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+@dataclass(frozen=True, slots=True)
+class _ProcessResult:
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+    duration_ms: int
+
+
+def _run_bounded(
+    command: list[str],
+    *,
+    cwd: Path | None,
+    environment: dict[str, str] | None,
+    timeout: float,
+    stdout_limit: int,
+    stderr_limit: int,
+) -> _ProcessResult:
+    """Run a fixed adapter command with live time and output ceilings."""
+    started = time.monotonic()
+    process = subprocess.Popen(  # noqa: S603 - fixed reviewed adapter commands
+        command,
+        cwd=cwd,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdout is None or process.stderr is None:  # pragma: no cover
+        process.kill()
+        raise SbomError("SBOM generator pipes could not be created")
+    exceeded: list[str] = []
+    output = bytearray()
+    errors = bytearray()
+
+    def read(stream: Any, target: bytearray, limit: int, label: str) -> None:
+        while chunk := stream.read(64 * 1024):
+            remaining = limit - len(target)
+            if remaining > 0:
+                target.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                exceeded.append(label)
+                process.kill()
+                return
+
+    readers = [
+        threading.Thread(
+            target=read,
+            args=(process.stdout, output, stdout_limit, "stdout"),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read,
+            args=(process.stderr, errors, stderr_limit, "stderr"),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.wait()
+        for reader in readers:
+            reader.join()
+        raise SbomError(f"SBOM generator exceeded {timeout:g} seconds") from error
+    for reader in readers:
+        reader.join()
+    if exceeded:
+        raise SbomError(
+            f"SBOM generator {sorted(set(exceeded))[0]} exceeded its safety limit"
+        )
+    return _ProcessResult(
+        returncode=returncode,
+        stdout=bytes(output),
+        stderr=bytes(errors),
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
+
+
 def safe_extract_zip(archive: bytes, destination: Path) -> Path:
     """Extract a GitHub zipball without trusting entry paths or attributes."""
     if len(archive) > MAX_ARCHIVE_BYTES:
@@ -114,7 +196,7 @@ def safe_extract_zip(archive: bytes, destination: Path) -> Path:
         extracted_paths: set[PurePosixPath] = set()
         for entry in entries:
             path = PurePosixPath(entry.filename)
-            if path.is_absolute():
+            if path.is_absolute() or "\\" in entry.filename or "\0" in entry.filename:
                 raise SbomError("Repository archive contains an unsafe path")
             if not path.parts or path.parts[0] != root:
                 raise SbomError("Repository archive contains an invalid root")
@@ -144,8 +226,15 @@ def safe_extract_zip(archive: bytes, destination: Path) -> Path:
             if file_count > MAX_ARCHIVE_FILES:
                 raise SbomError("Repository archive contains too many files")
             target.parent.mkdir(parents=True, exist_ok=True)
+            extracted_size = 0
             with bundle.open(entry) as source, target.open("wb") as output:
-                shutil.copyfileobj(source, output, length=1024 * 1024)
+                while chunk := source.read(1024 * 1024):
+                    extracted_size += len(chunk)
+                    if extracted_size > entry.file_size:
+                        raise SbomError(
+                            "Repository archive entry expands beyond its declared size"
+                        )
+                    output.write(chunk)
     return destination
 
 
@@ -281,20 +370,22 @@ def generate_uv_sbom(root: Path) -> SbomResult:
     executable = shutil.which("uv") or (str(adjacent) if adjacent.is_file() else None)
     if executable is None:
         raise SbomError("uv 0.13.5 is required to generate repository SBOMs")
-    version = subprocess.run(  # noqa: S603 - resolved executable, fixed arguments
+    version = _run_bounded(
         [executable, "--version"],
-        check=False,
-        capture_output=True,
-        text=True,
+        cwd=None,
+        environment=None,
         timeout=10,
+        stdout_limit=MAX_VERSION_OUTPUT_BYTES,
+        stderr_limit=MAX_VERSION_OUTPUT_BYTES,
     )
-    version_parts = version.stdout.split()
+    version_output = version.stdout.decode(errors="replace")
+    version_parts = version_output.split()
     if (
         version.returncode != 0
         or len(version_parts) < 2
         or version_parts[:2] != ["uv", UV_VERSION]
     ):
-        raise SbomError(f"Expected uv {UV_VERSION}, found {version.stdout.strip()}")
+        raise SbomError(f"Expected uv {UV_VERSION}, found {version_output.strip()}")
     environment = {
         key: os.environ[key]
         for key in ("PATH", "SYSTEMROOT", "WINDIR", "TMPDIR", "TMP", "TEMP")
@@ -320,38 +411,35 @@ def generate_uv_sbom(root: Path) -> SbomResult:
         "--all-extras",
         "--no-editable",
     ]
-    started = time.monotonic()
     with (
+        tempfile.TemporaryDirectory(
+            prefix="stateforge-dpt-sbom-workspace-"
+        ) as workspace_value,
         tempfile.TemporaryDirectory(prefix="stateforge-dpt-sbom-home-") as home,
-        tempfile.TemporaryFile() as stdout,
-        tempfile.TemporaryFile() as stderr,
     ):
+        workspace = Path(workspace_value)
+        for name in inputs:
+            shutil.copyfile(root / name, workspace / name)
         environment["HOME"] = home
-        try:
-            process = subprocess.run(  # noqa: S603 - fixed adapter command
-                command,
-                cwd=root,
-                env=environment,
-                check=False,
-                stdout=stdout,
-                stderr=stderr,
-                timeout=GENERATOR_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise SbomError(
-                f"uv CycloneDX export exceeded {GENERATOR_TIMEOUT_SECONDS} seconds"
-            ) from error
-        duration_ms = round((time.monotonic() - started) * 1000)
-        stdout_size = stdout.seek(0, 2)
-        if stdout_size > MAX_SBOM_BYTES:
-            raise SbomError("Generated CycloneDX document exceeds the cache limit")
-        stdout.seek(0)
-        output = stdout.read(MAX_SBOM_BYTES + 1)
-        stderr.seek(0)
-        error_output = stderr.read(4_001).decode(errors="replace")
+        environment["XDG_CONFIG_HOME"] = str(Path(home) / "config")
+        process = _run_bounded(
+            command,
+            cwd=workspace,
+            environment=environment,
+            timeout=GENERATOR_TIMEOUT_SECONDS,
+            stdout_limit=MAX_SBOM_BYTES,
+            stderr_limit=MAX_GENERATOR_STDERR_BYTES,
+        )
+    current_digest, current_inputs = dependency_material(root)
+    if current_digest != digest or current_inputs != inputs:
+        raise SbomError("SBOM generation modified its dependency inputs")
+    output = process.stdout
+    error_output = process.stderr.decode(errors="replace")
     if process.returncode != 0:
         detail = error_output[:4_000].strip()
-        raise SbomError(f"uv CycloneDX export failed after {duration_ms} ms: {detail}")
+        raise SbomError(
+            f"uv CycloneDX export failed after {process.duration_ms} ms: {detail}"
+        )
     try:
         document: Any = json.loads(output)
     except json.JSONDecodeError as error:
@@ -362,9 +450,10 @@ def generate_uv_sbom(root: Path) -> SbomResult:
         inputs,
         generator_diagnostics={
             "command": ["uv", *command[1:]],
-            "duration_ms": duration_ms,
+            "duration_ms": process.duration_ms,
             "exit_code": process.returncode,
             "stderr": error_output[:4_000],
+            "workspace": "isolated dependency inputs",
         },
     )
 

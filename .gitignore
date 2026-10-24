@@ -15,4 +15,4 @@ node_modules/
 frontend/dist/
 .stateforge-dpt/
 projects/
-idea/
+.idea/

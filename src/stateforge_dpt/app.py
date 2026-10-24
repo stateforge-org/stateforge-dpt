@@ -117,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     reconciliation_full_at: dict[str, float] = {}
     reconciliation_failures: dict[str, int] = {}
     security_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
+    security_progress: dict[str, dict[str, object]] = {}
     background_session_token: str | None = None
     reconciliation_wakeup: asyncio.Event | None = None
 
@@ -337,14 +338,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         existing = security_tasks.get(project_id)
         if existing is not None and not existing.done():
             return existing
-        task = asyncio.create_task(
-            security_evidence.refresh_project(
-                str(current["access_token"]),
-                service.project(project_id),
-                service.repositories(project_id),
-                force=force,
-            )
-        )
+        started_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        security_progress[project_id] = {
+            "state": "running",
+            "started_at": started_at,
+            "completed_at": None,
+            "title": "Preparing security assessment",
+            "detail": "Resolving repository branch heads.",
+            "repository": None,
+            "repository_index": 0,
+            "repository_count": len(service.repositories(project_id)),
+        }
+
+        async def report(event: dict[str, object]) -> None:
+            security_progress[project_id] = {
+                **security_progress[project_id],
+                **event,
+                "state": "running",
+            }
+
+        async def run() -> dict[str, Any]:
+            try:
+                result = await security_evidence.refresh_project(
+                    str(current["access_token"]),
+                    service.project(project_id),
+                    service.repositories(project_id),
+                    report=report,
+                    force=force,
+                )
+            except Exception as error:
+                security_progress[project_id] = {
+                    **security_progress[project_id],
+                    "state": "failed",
+                    "completed_at": datetime.now(UTC)
+                    .replace(microsecond=0)
+                    .isoformat(),
+                    "title": "Security assessment failed",
+                    "detail": str(error),
+                }
+                raise
+            security_progress[project_id] = {
+                **security_progress[project_id],
+                "state": "completed",
+                "completed_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+                "title": "Security assessment complete",
+                "detail": "Stored current repository evidence.",
+            }
+            return result
+
+        task = asyncio.create_task(run())
         security_tasks[project_id] = task
 
         def finish(completed: asyncio.Task[dict[str, Any]]) -> None:
@@ -1118,9 +1160,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             str(project.get("plan_source_branch") or "mvp/implementation"),
         )
         task = security_tasks.get(project_id)
-        result["refresh"] = {
-            "state": "running" if task is not None and not task.done() else "idle"
-        }
+        result["refresh"] = security_progress.get(
+            project_id,
+            {
+                "state": "running" if task is not None and not task.done() else "idle",
+                "started_at": None,
+                "completed_at": None,
+            },
+        )
+        return result
+
+    @app.get("/api/projects/{project_id}/security/repositories/{repository_id}/sbom")
+    async def repository_security_sbom(
+        project_id: str, repository_id: str
+    ) -> dict[str, Any]:
+        """Return one current validated SBOM without inflating dashboard payloads."""
+        service.project(project_id)
+        result = security_evidence.sbom_document(project_id, repository_id)
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No current validated SBOM is available for this repository",
+            )
         return result
 
     @app.post("/api/projects/{project_id}/security/refresh", status_code=202)

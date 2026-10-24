@@ -3,15 +3,18 @@ import hashlib
 import io
 import json
 import stat
+import sys
 import threading
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 import stateforge_dpt.security_evidence.osv as osv_module
+import stateforge_dpt.security_evidence.sbom as sbom_module
 from stateforge_dpt.app import SESSION_COOKIE, create_app
 from stateforge_dpt.config import DEFAULT_GITHUB_CLIENT_ID, Settings
 from stateforge_dpt.database import Database
@@ -36,11 +39,14 @@ from stateforge_dpt.security_evidence.models import (
     SourceStatus,
     aggregate_state,
 )
-from stateforge_dpt.security_evidence.osv import OsvClient
+from stateforge_dpt.security_evidence.osv import OsvClient, OsvError
 from stateforge_dpt.security_evidence.sbom import (
     SbomError,
     UnsupportedRepositoryError,
+    _ProcessResult,
+    _run_bounded,
     dependency_material,
+    generate_uv_sbom,
     safe_extract_zip,
     select_sbom_adapter,
     validate_cached_sbom,
@@ -177,6 +183,39 @@ def test_safe_archive_extraction_rejects_absolute_and_special_entries(
         safe_extract_zip(archive.getvalue(), tmp_path / "extract")
 
 
+def test_safe_archive_extraction_enforces_count_expansion_and_path_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    too_many = _archive({"first": "1", "second": "2"})
+    monkeypatch.setattr(sbom_module, "MAX_ARCHIVE_FILES", 1)
+    with pytest.raises(SbomError, match="too many files"):
+        safe_extract_zip(too_many, tmp_path / "count")
+
+    monkeypatch.setattr(sbom_module, "MAX_ARCHIVE_FILES", 50_000)
+    monkeypatch.setattr(sbom_module, "MAX_EXTRACTED_BYTES", 4)
+    with pytest.raises(SbomError, match="expands beyond"):
+        safe_extract_zip(_archive({"large": "12345"}), tmp_path / "expansion")
+
+    monkeypatch.setattr(sbom_module, "MAX_EXTRACTED_BYTES", 500 * 1024 * 1024)
+    monkeypatch.setattr(sbom_module, "MAX_ARCHIVE_BYTES", 8)
+    with pytest.raises(SbomError, match="download limit"):
+        safe_extract_zip(_archive({"file": "content"}), tmp_path / "archive")
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["repository-root/..\\outside.txt", "repository-root/nul\0name"],
+)
+def test_safe_archive_extraction_rejects_cross_platform_unsafe_paths(
+    tmp_path: Path, name: str
+) -> None:
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(name, "unsafe")
+    with pytest.raises((SbomError, ValueError), match=r"unsafe|NUL"):
+        safe_extract_zip(archive.getvalue(), tmp_path / "extract")
+
+
 def test_dependency_digest_ignores_the_dpt_cache_file(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='fixture'\n")
     (tmp_path / "uv.lock").write_text("version = 1\n")
@@ -216,6 +255,115 @@ def test_changed_dependency_input_invalidates_material_digest(tmp_path: Path) ->
 
     second, _ = dependency_material(tmp_path)
     assert first != second
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_generator_process_enforces_live_output_limits(stream: str) -> None:
+    script = (
+        f"import sys; sys.{stream}.buffer.write(b'x' * 10000); sys.{stream}.flush()"
+    )
+    with pytest.raises(SbomError, match=f"{stream} exceeded"):
+        _run_bounded(
+            [sys.executable, "-c", script],
+            cwd=None,
+            environment=None,
+            timeout=5,
+            stdout_limit=64,
+            stderr_limit=64,
+        )
+
+
+def test_generator_process_enforces_timeout() -> None:
+    with pytest.raises(SbomError, match="exceeded"):
+        _run_bounded(
+            [sys.executable, "-c", "import time; time.sleep(1)"],
+            cwd=None,
+            environment=None,
+            timeout=0.01,
+            stdout_limit=64,
+            stderr_limit=64,
+        )
+
+
+def test_uv_generator_uses_only_copied_inputs_and_preserves_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "pyproject.toml"
+    lock = tmp_path / "uv.lock"
+    project.write_text("[project]\nname='fixture'\nversion='1.0'\n")
+    lock.write_text("version = 1\n")
+    (tmp_path / "unrelated-secret.txt").write_text("must not enter workspace")
+    original_project = project.read_bytes()
+    document = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "metadata": {
+            "component": {
+                "type": "application",
+                "name": "fixture",
+                "version": "1.0",
+                "bom-ref": "fixture@1.0",
+            }
+        },
+        "components": [],
+    }
+    calls = 0
+
+    def run(command, *, cwd, environment, timeout, stdout_limit, stderr_limit):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _ProcessResult(0, b"uv 0.13.5\n", b"", 1)
+        assert cwd is not None and cwd != tmp_path
+        assert environment is not None and environment["HOME"] != str(Path.home())
+        assert sorted(path.name for path in cwd.iterdir()) == [
+            "pyproject.toml",
+            "uv.lock",
+        ]
+        (cwd / "pyproject.toml").write_text("workspace mutation")
+        return _ProcessResult(0, json.dumps(document).encode(), b"", 2)
+
+    monkeypatch.setattr(sbom_module.shutil, "which", lambda _name: "/fake/uv")
+    monkeypatch.setattr(sbom_module, "_run_bounded", run)
+
+    result = generate_uv_sbom(tmp_path)
+
+    assert result.document["metadata"]["component"]["name"] == "fixture"
+    assert project.read_bytes() == original_project
+    assert result.generator_diagnostics["workspace"] == "isolated dependency inputs"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "output", "message"),
+    [(2, b"{}", "export failed"), (0, b"not-json", "invalid CycloneDX JSON")],
+)
+def test_uv_generator_rejects_nonzero_and_malformed_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    output: bytes,
+    message: str,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\nversion='1.0'\n"
+    )
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    calls = 0
+
+    def run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return (
+            _ProcessResult(0, b"uv 0.13.5\n", b"", 1)
+            if calls == 1
+            else _ProcessResult(returncode, output, b"failure", 2)
+        )
+
+    monkeypatch.setattr(sbom_module.shutil, "which", lambda _name: "/fake/uv")
+    monkeypatch.setattr(sbom_module, "_run_bounded", run)
+
+    with pytest.raises(SbomError, match=message):
+        generate_uv_sbom(tmp_path)
 
 
 def test_sbom_canonicalization_excludes_uv_transport_identity() -> None:
@@ -387,6 +535,7 @@ def test_osv_querybatch_follows_per_component_pagination() -> None:
         "queryable_components": 1,
         "queried_components": 1,
         "failed_queries": 0,
+        "withdrawn_advisories": 0,
     }
     assert len(findings) == 1
     assert findings[0]["severity"] == "high"
@@ -457,6 +606,110 @@ def test_osv_splits_large_component_sets_into_bounded_batches(
     assert findings == []
     assert batch_sizes == [1, 1]
     assert coverage["queried_components"] == 2
+
+
+def test_osv_retries_rate_limits_and_transient_server_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, request=request)
+        if attempts == 2:
+            return httpx.Response(503, request=request)
+        return httpx.Response(200, request=request, json={"results": []})
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    async def run() -> object:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await OsvClient()._request(client, "GET", "/test")
+
+    monkeypatch.setattr(osv_module.asyncio, "sleep", no_sleep)
+    assert asyncio.run(run()) == {"results": []}
+    assert attempts == 3
+
+
+def test_osv_invalid_json_is_a_structured_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request, text="not-json")
+
+    async def run() -> object:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await OsvClient()._request(client, "GET", "/test")
+
+    with pytest.raises(OsvError, match="invalid JSON"):
+        asyncio.run(run())
+
+
+def test_osv_hydration_failure_reduces_coverage_without_hiding_other_findings() -> None:
+    client = OsvClient()
+
+    async def request(_client, method, path, **_kwargs):
+        if method == "POST":
+            return {
+                "results": [
+                    {"vulns": [{"id": "CVE-good"}]},
+                    {"vulns": [{"id": "CVE-failed"}]},
+                ]
+            }
+        if path.endswith("CVE-failed"):
+            raise OsvError("advisory lookup failed")
+        return {
+            "id": "CVE-good",
+            "summary": "Known vulnerability",
+            "database_specific": {"severity": "HIGH"},
+        }
+
+    client._request = request  # type: ignore[method-assign]
+    findings, coverage = asyncio.run(
+        client.assess(
+            {
+                "components": [
+                    {
+                        "name": name,
+                        "version": "1.0",
+                        "purl": f"pkg:pypi/{name}@1.0",
+                    }
+                    for name in ("good", "failed")
+                ]
+            }
+        )
+    )
+
+    assert [finding["id"] for finding in findings] == ["CVE-good"]
+    assert coverage["queried_components"] == 1
+    assert coverage["failed_queries"] == 1
+
+
+def test_osv_missing_severity_remains_unknown() -> None:
+    client = OsvClient()
+
+    async def request(_client, method, _path, **_kwargs):
+        if method == "POST":
+            return {"results": [{"vulns": [{"id": "CVE-unknown"}]}]}
+        return {"id": "CVE-unknown", "summary": "Severity not supplied"}
+
+    client._request = request  # type: ignore[method-assign]
+    findings, _coverage = asyncio.run(
+        client.assess(
+            {
+                "components": [
+                    {
+                        "name": "demo",
+                        "version": "1.0",
+                        "purl": "pkg:pypi/demo@1.0",
+                    }
+                ]
+            }
+        )
+    )
+
+    assert findings[0]["severity"] == "unknown"
 
 
 def test_repository_refresh_persists_exact_head_dependency_and_codeql_findings(
@@ -624,6 +877,17 @@ def test_repository_refresh_persists_exact_head_dependency_and_codeql_findings(
     assert details["security"]["dependency_findings"] == 1
     assert details["security"]["codeql_findings"] == 1
     assert details["sbom"]["component_count"] == 1
+    inventory = service.sbom_document(
+        str(project["project_id"]), str(repository["repository_id"])
+    )
+    assert inventory is not None
+    assert inventory["observed_commit_sha"] == head
+    assert inventory["document"]["components"][0] == {
+        "type": "library",
+        "name": "demo",
+        "version": "1.0",
+        "purl": "pkg:pypi/demo@1.0",
+    }
 
 
 def test_portable_sbom_cache_import_preserves_generator_contract(
@@ -745,16 +1009,27 @@ def test_codeql_exact_head_error_and_missing_configuration_are_not_green(
         async def codeql_analyses(self, _token, _full_name, _branch):
             raise GitHubError("Code scanning is disabled", status_code=404)
 
+    class Permission:
+        async def codeql_analyses(self, _token, _full_name, _branch):
+            raise GitHubError("Resource not accessible by integration", status_code=403)
+
     database = Database(tmp_path / "dpt.sqlite3")
     database.initialize()
     failed = SecurityEvidenceService(database, Failed())  # type: ignore[arg-type]
     missing = SecurityEvidenceService(database, Missing())  # type: ignore[arg-type]
+    permission = SecurityEvidenceService(
+        database,
+        Permission(),  # type: ignore[arg-type]
+    )
 
     failed_status, _, _ = asyncio.run(
         failed._codeql("token", "stateforge-org/agent", "branch", "head")
     )
     missing_status, _, _ = asyncio.run(
         missing._codeql("token", "stateforge-org/agent", "branch", "head")
+    )
+    permission_status, _, _ = asyncio.run(
+        permission._codeql("token", "stateforge-org/agent", "branch", "head")
     )
 
     assert failed_status == {
@@ -766,6 +1041,9 @@ def test_codeql_exact_head_error_and_missing_configuration_are_not_green(
     }
     assert missing_status["state"] == "not_configured"
     assert missing_status["configured"] is False
+    assert permission_status["state"] == "unavailable"
+    assert permission_status["configured"] is True
+    assert "Code scanning alerts" in permission_status["message"]
 
 
 def test_security_refresh_requires_user_session_and_joins_inflight_task(
@@ -775,6 +1053,15 @@ def test_security_refresh_requires_user_session_and_joins_inflight_task(
     started = threading.Event()
 
     async def refresh_project(*_args, **_kwargs):
+        await _kwargs["report"](
+            {
+                "title": "Assessing agent",
+                "detail": "Resolving exact source evidence.",
+                "repository": "agent",
+                "repository_index": 1,
+                "repository_count": 1,
+            }
+        )
         started.set()
         await asyncio.Event().wait()
         return {}
@@ -811,8 +1098,15 @@ def test_security_refresh_requires_user_session_and_joins_inflight_task(
         first = client.post(endpoint)
         assert started.wait(timeout=1)
         second = client.post(endpoint)
+        progress = client.get(f"/api/projects/{project['project_id']}/security").json()[
+            "refresh"
+        ]
 
         assert first.status_code == 202
         assert first.json() == {"state": "started", "joined": False}
         assert second.status_code == 202
         assert second.json() == {"state": "running", "joined": True}
+        assert progress["state"] == "running"
+        assert progress["title"] == "Assessing agent"
+        assert progress["repository_index"] == 1
+        assert progress["repository_count"] == 1

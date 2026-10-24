@@ -8,6 +8,7 @@ import react from "@vitejs/plugin-react";
 
 let server;
 let RepositorySecurityStrip;
+let SbomInventoryView;
 
 before(async () => {
   server = await createServer({
@@ -18,7 +19,7 @@ before(async () => {
     server: { middlewareMode: true, hmr: false },
     appType: "custom",
   });
-  ({ RepositorySecurityStrip } = await server.ssrLoadModule("/src/SecurityEvidence.tsx"));
+  ({ RepositorySecurityStrip, SbomInventoryView } = await server.ssrLoadModule("/src/SecurityEvidence.tsx"));
 });
 
 after(async () => { await server?.close(); });
@@ -61,4 +62,40 @@ test("renders honest repository security states without claiming repositories ar
   assert.match(html, /Partial/);
   assert.doesNotMatch(html, />Secure</);
   assert.match(html, /repository-security-card-critical/);
+});
+
+test("renders the complete SBOM as a readable component inventory", () => {
+  const html = renderToStaticMarkup(createElement(SbomInventoryView, {
+    sbom: {
+      repository_id: "provider",
+      alias: "provider",
+      github_full_name: "stateforge-org/stateforge-provider-python",
+      observed_commit_sha: "0123456789abcdef",
+      sha256: "a".repeat(64),
+      format: "cyclonedx-json",
+      spec_version: "1.5",
+      generated_at: "2026-10-24T00:00:00Z",
+      document: {
+        bomFormat: "CycloneDX",
+        specVersion: "1.5",
+        metadata: { component: { name: "stateforge-provider", version: "0.1.0" } },
+        components: [{
+          type: "library",
+          name: "grpcio",
+          version: "1.84.0",
+          purl: "pkg:pypi/grpcio@1.84.0",
+          scope: "required",
+          licenses: [{ license: { id: "Apache-2.0" } }],
+        }],
+      },
+    },
+  }));
+
+  assert.match(html, /stateforge-provider/);
+  assert.match(html, /grpcio/);
+  assert.match(html, /1\.84\.0/);
+  assert.match(html, /Apache-2\.0/);
+  assert.match(html, /pkg:pypi\/grpcio@1\.84\.0/);
+  assert.match(html, /View raw CycloneDX JSON/);
+  assert.match(html, /Download CycloneDX/);
 });

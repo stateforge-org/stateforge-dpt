@@ -152,11 +152,18 @@ class OsvClient:
                     await asyncio.sleep(0.25 * (2**attempt))
                     continue
                 response.raise_for_status()
-                return response.json()
+                try:
+                    return response.json()
+                except ValueError as error:
+                    raise OsvError("OSV returned invalid JSON") from error
             except (httpx.TimeoutException, httpx.NetworkError) as error:
                 if attempt == 2:
                     raise OsvError(f"OSV request failed: {error}") from error
                 await asyncio.sleep(0.25 * (2**attempt))
+            except httpx.HTTPStatusError as error:
+                raise OsvError(
+                    f"OSV returned HTTP {error.response.status_code}"
+                ) from error
         raise OsvError("OSV request failed after retries")
 
     async def assess(
@@ -169,6 +176,7 @@ class OsvClient:
             "queryable_components": len(components),
             "queried_components": 0,
             "failed_queries": 0,
+            "withdrawn_advisories": 0,
         }
         if not components:
             return [], coverage
@@ -180,19 +188,32 @@ class OsvClient:
             for item in components
         ]
         async with httpx.AsyncClient(timeout=20) as client:
-            results: list[object] = []
+            results: list[object | None] = [None] * len(queries)
+            failed_components: set[int] = set()
+            successful_components: set[int] = set()
             for offset in range(0, len(queries), OSV_BATCH_SIZE):
                 query_batch = queries[offset : offset + OSV_BATCH_SIZE]
-                payload = await self._request(
-                    client,
-                    "POST",
-                    "/v1/querybatch",
-                    json={"queries": query_batch},
-                )
+                try:
+                    payload = await self._request(
+                        client,
+                        "POST",
+                        "/v1/querybatch",
+                        json={"queries": query_batch},
+                    )
+                except OsvError:
+                    failed_components.update(range(offset, offset + len(query_batch)))
+                    continue
                 values = payload.get("results") if isinstance(payload, dict) else None
                 if not isinstance(values, list) or len(values) != len(query_batch):
-                    raise OsvError("OSV returned an incomplete batch response")
-                results.extend(values)
+                    failed_components.update(range(offset, offset + len(query_batch)))
+                    continue
+                for relative_index, value in enumerate(values):
+                    index = offset + relative_index
+                    if not isinstance(value, dict):
+                        failed_components.add(index)
+                        continue
+                    results[index] = value
+                    successful_components.add(index)
             component_ids: list[set[str]] = [set() for _ in components]
             pending: list[tuple[int, dict[str, Any], str]] = []
 
@@ -214,7 +235,8 @@ class OsvClient:
                     pending.append((index, query, token))
 
             for index, (query, result) in enumerate(zip(queries, results, strict=True)):
-                collect(index, query, result)
+                if result is not None:
+                    collect(index, query, result)
 
             page = 0
             while pending:
@@ -228,12 +250,18 @@ class OsvClient:
                         {**query, "page_token": token}
                         for _, query, token in pending_batch
                     ]
-                    page_payload = await self._request(
-                        client,
-                        "POST",
-                        "/v1/querybatch",
-                        json={"queries": page_queries},
-                    )
+                    try:
+                        page_payload = await self._request(
+                            client,
+                            "POST",
+                            "/v1/querybatch",
+                            json={"queries": page_queries},
+                        )
+                    except OsvError:
+                        failed_components.update(
+                            index for index, _query, _token in pending_batch
+                        )
+                        continue
                     page_results = (
                         page_payload.get("results")
                         if isinstance(page_payload, dict)
@@ -242,13 +270,19 @@ class OsvClient:
                     if not isinstance(page_results, list) or len(page_results) != len(
                         pending_batch
                     ):
-                        raise OsvError("OSV returned an incomplete paginated response")
+                        failed_components.update(
+                            index for index, _query, _token in pending_batch
+                        )
+                        continue
                     for (index, query, _), result in zip(
                         pending_batch, page_results, strict=True
                     ):
                         collect(index, query, result)
 
-            coverage["queried_components"] = len(results)
+            coverage["queried_components"] = len(
+                successful_components - failed_components
+            )
+            coverage["failed_queries"] = len(failed_components)
             ids = set().union(*component_ids)
             semaphore = asyncio.Semaphore(8)
 
@@ -265,7 +299,24 @@ class OsvClient:
                         )
                     return identifier, record
 
-            hydrated = dict(await asyncio.gather(*(hydrate(value) for value in ids)))
+            hydrated_results = await asyncio.gather(
+                *(hydrate(value) for value in ids), return_exceptions=True
+            )
+            hydrated: dict[str, dict[str, Any]] = {}
+            failed_identifiers: set[str] = set()
+            for identifier, result in zip(ids, hydrated_results, strict=True):
+                if isinstance(result, BaseException):
+                    failed_identifiers.add(identifier)
+                else:
+                    hydrated[result[0]] = result[1]
+            if failed_identifiers:
+                for index, identifiers in enumerate(component_ids):
+                    if identifiers & failed_identifiers:
+                        failed_components.add(index)
+                coverage["queried_components"] = len(
+                    successful_components - failed_components
+                )
+                coverage["failed_queries"] = len(failed_components)
 
         parent: dict[str, str] = {}
 
@@ -296,8 +347,11 @@ class OsvClient:
 
         findings: list[dict[str, Any]] = []
         emitted: set[tuple[str, str]] = set()
+        withdrawn_roots: set[str] = set()
         for component, identifiers in zip(components, component_ids, strict=True):
             for identifier in identifiers:
+                if identifier not in hydrated:
+                    continue
                 root = find(identifier)
                 key = (root, component["purl"])
                 if key in emitted:
@@ -306,6 +360,7 @@ class OsvClient:
                 records = records_by_root[root]
                 active_records = [item for item in records if not item.get("withdrawn")]
                 if not active_records:
+                    withdrawn_roots.add(root)
                     continue
                 record = max(
                     active_records,
@@ -354,4 +409,5 @@ class OsvClient:
                 str(item["component"]["purl"]),
             )
         )
+        coverage["withdrawn_advisories"] = len(withdrawn_roots)
         return findings, coverage

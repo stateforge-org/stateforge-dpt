@@ -151,6 +151,8 @@ export type RepositorySecuritySummary = {
   message?: string | null;
   dependency_status: SecuritySourceStatus;
   codeql_status: SecuritySourceStatus;
+  fresh: boolean;
+  evidence_qualifiers: string[];
 };
 
 export type SecuritySourceStatus = {
@@ -229,8 +231,48 @@ export type ProjectSecurity = {
     with_findings: number;
     severity_counts: Record<Exclude<SecuritySeverity, "none">, number>;
   };
-  refresh: { state: "idle" | "running" };
+  refresh: {
+    state: "idle" | "running" | "completed" | "failed";
+    started_at?: string | null;
+    completed_at?: string | null;
+    title?: string;
+    detail?: string;
+    repository?: string | null;
+    repository_index?: number;
+    repository_count?: number;
+  };
   repositories: RepositorySecurityDetails[];
+};
+
+export type SbomComponent = {
+  type?: string;
+  name: string;
+  version?: string;
+  purl?: string;
+  "bom-ref"?: string;
+  scope?: string;
+  licenses?: Array<{
+    expression?: string;
+    license?: { id?: string; name?: string };
+  }>;
+};
+
+export type RepositorySbomDocument = {
+  repository_id: string;
+  alias: string;
+  github_full_name: string;
+  observed_commit_sha: string;
+  sha256: string;
+  format: string;
+  spec_version: string;
+  generated_at: string;
+  document: {
+    bomFormat: string;
+    specVersion: string;
+    metadata?: { component?: SbomComponent };
+    components?: SbomComponent[];
+    [key: string]: unknown;
+  };
 };
 
 export type GitHubAccount = {
