@@ -592,6 +592,7 @@ def test_milestone_pull_request_uses_selected_github_branches(
         "caching",
         "dependencies",
         "validating",
+        "security",
     ]
     assert reconciliation_events[2]["repository"] == (
         "stateforge-org/stateforge-protocol"

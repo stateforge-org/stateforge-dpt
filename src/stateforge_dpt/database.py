@@ -259,6 +259,7 @@ CREATE TABLE IF NOT EXISTS remote_plan_snapshots (
     revision INTEGER,
     fingerprint TEXT,
     file_digest TEXT,
+    security_cache_json TEXT,
     error TEXT,
     fetched_at TEXT NOT NULL
 );
@@ -304,6 +305,87 @@ CREATE TABLE IF NOT EXISTS plan_change_proposal_operations (
     PRIMARY KEY(proposal_id, operation_id)
 );
 
+CREATE TABLE IF NOT EXISTS repository_security_sboms (
+    sbom_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    plan_source_branch TEXT NOT NULL,
+    observed_commit_sha TEXT NOT NULL,
+    dependency_material_digest TEXT NOT NULL,
+    dependency_material_inputs TEXT NOT NULL DEFAULT '[]',
+    adapter_id TEXT NOT NULL,
+    adapter_version INTEGER NOT NULL,
+    tool_name TEXT NOT NULL,
+    tool_version TEXT NOT NULL,
+    sbom_format TEXT NOT NULL,
+    sbom_spec_version TEXT NOT NULL,
+    sbom_sha256 TEXT NOT NULL,
+    sbom_json TEXT NOT NULL,
+    component_count INTEGER NOT NULL,
+    third_party_component_count INTEGER NOT NULL,
+    queryable_component_count INTEGER NOT NULL,
+    coverage_json TEXT NOT NULL DEFAULT '{}',
+    generator_diagnostics_json TEXT NOT NULL DEFAULT '{}',
+    generated_at TEXT NOT NULL,
+    validated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    error_message TEXT,
+    UNIQUE(
+        repository_id, dependency_material_digest, adapter_id, adapter_version
+    )
+);
+
+CREATE TABLE IF NOT EXISTS repository_vulnerability_assessments (
+    assessment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    sbom_sha256 TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_version TEXT NOT NULL,
+    findings_json TEXT NOT NULL DEFAULT '[]',
+    severity_counts_json TEXT NOT NULL DEFAULT '{}',
+    coverage_json TEXT NOT NULL DEFAULT '{}',
+    assessed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    error_message TEXT,
+    UNIQUE(repository_id, sbom_sha256, source)
+);
+
+CREATE TABLE IF NOT EXISTS repository_codeql_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    plan_source_branch TEXT NOT NULL,
+    observed_commit_sha TEXT NOT NULL,
+    analyses_json TEXT NOT NULL DEFAULT '[]',
+    alerts_json TEXT NOT NULL DEFAULT '[]',
+    severity_counts_json TEXT NOT NULL DEFAULT '{}',
+    observed_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    error_message TEXT,
+    UNIQUE(repository_id, plan_source_branch, observed_commit_sha)
+);
+
+CREATE TABLE IF NOT EXISTS repository_security_status (
+    repository_id TEXT PRIMARY KEY REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    plan_source_branch TEXT NOT NULL,
+    observed_commit_sha TEXT,
+    state TEXT NOT NULL,
+    highest_severity TEXT NOT NULL,
+    dependency_status_json TEXT NOT NULL DEFAULT '{}',
+    codeql_status_json TEXT NOT NULL DEFAULT '{}',
+    severity_counts_json TEXT NOT NULL DEFAULT '{}',
+    coverage_json TEXT NOT NULL DEFAULT '{}',
+    dependency_findings INTEGER NOT NULL DEFAULT 0,
+    codeql_findings INTEGER NOT NULL DEFAULT 0,
+    refreshed_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_steps_repository
     ON steps(repository_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_artifacts_step
@@ -324,6 +406,14 @@ CREATE INDEX IF NOT EXISTS idx_context_approvals_step
     ON context_approvals(project_id, step_id, approved_at DESC);
 CREATE INDEX IF NOT EXISTS idx_plan_change_proposals_project
     ON plan_change_proposals(project_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_sboms_repository
+    ON repository_security_sboms(repository_id, validated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vulnerability_assessments_repository
+    ON repository_vulnerability_assessments(repository_id, assessed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_codeql_snapshots_repository
+    ON repository_codeql_snapshots(repository_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_status_state
+    ON repository_security_status(state, refreshed_at DESC);
 """
 
 
@@ -460,6 +550,29 @@ class Database:
                 connection.execute(
                     "ALTER TABLE github_artifacts "
                     "ADD COLUMN changed_files TEXT NOT NULL DEFAULT '[]'"
+                )
+            remote_snapshot_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(remote_plan_snapshots)"
+                ).fetchall()
+            }
+            if "security_cache_json" not in remote_snapshot_columns:
+                connection.execute(
+                    "ALTER TABLE remote_plan_snapshots "
+                    "ADD COLUMN security_cache_json TEXT"
+                )
+            sbom_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(repository_security_sboms)"
+                ).fetchall()
+            }
+            if "generator_diagnostics_json" not in sbom_columns:
+                connection.execute(
+                    "ALTER TABLE repository_security_sboms "
+                    "ADD COLUMN generator_diagnostics_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
                 )
 
     @contextmanager

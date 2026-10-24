@@ -37,6 +37,7 @@ import {
   Route,
   Settings,
   ShieldCheck,
+  ShieldAlert,
   Sparkles,
   Tag,
   Trash2,
@@ -62,6 +63,10 @@ import { api, apiStream } from "./api";
 import { Markdown } from "./Markdown";
 import { PlanEditorPage } from "./PlanEditor";
 import { ProjectStatusDashboard } from "./ProjectStatusDashboard";
+import {
+  RepositorySecurityStrip,
+  VulnerabilitiesPage,
+} from "./SecurityEvidence";
 import type {
   Activity,
   Artifact,
@@ -97,6 +102,7 @@ type PageName =
   | "repositories"
   | "plan"
   | "reconciliation"
+  | "vulnerabilities"
   | "activity"
   | "settings"
   | "connect-github";
@@ -108,6 +114,7 @@ const pageItems: Array<{ page: PageName; label: string; icon: ReactNode }> = [
   { page: "repositories", label: "Repositories", icon: <FolderGit2 /> },
   { page: "plan", label: "Plan editor", icon: <FileCode2 /> },
   { page: "reconciliation", label: "Reconciliation", icon: <FileDiff /> },
+  { page: "vulnerabilities", label: "Vulnerabilities", icon: <ShieldAlert /> },
   { page: "activity", label: "Activity", icon: <ActivityIcon /> },
   { page: "settings", label: "Settings", icon: <Settings /> },
 ];
@@ -1464,6 +1471,7 @@ function CurrentPage(props: {
     case "repositories": return <RepositoriesPage dashboard={props.dashboard} onAdd={props.onAddRepository} onRemoved={props.onRemoveRepository} />;
     case "plan": return <PlanEditorPage canPublishGit={Boolean(props.session?.authenticated)} dashboard={props.dashboard} onChanged={props.onPlanChanged} onGenerate={props.onGenerate} onPublishGit={props.onPublishGit} onOpenDelivery={props.onOpenStep} />;
     case "reconciliation": return <ReconciliationPage dashboard={props.dashboard} onOpenStep={props.onOpenStep} onReconcile={props.onReconcile} progress={props.reconciliationProgress} reconciling={props.reconciling} session={props.session} />;
+    case "vulnerabilities": return <VulnerabilitiesPage projectId={props.dashboard.project.project_id} />;
     case "activity": return <ActivityPage activity={props.activity} />;
     case "settings": return <SettingsPage dashboard={props.dashboard} onChanged={props.onPlanChanged} />;
     case "connect-github": return <GitHubConnectPage session={props.session} onConnected={props.onGitHubConnected} />;
@@ -1476,6 +1484,7 @@ function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: {
     <>
       <PageHeader eyebrow="Project overview" title={`${dashboard.project.name} ${dashboard.project.release}`} description="The canonical project plan and current GitHub delivery evidence, kept current automatically." actions={<button className="button button-primary" onClick={onReconcile}><RefreshCw />Sync now</button>} />
       <RepositoryCiStrip repositories={dashboard.repositories} onAddRepository={onAddRepository} />
+      <RepositorySecurityStrip repositories={dashboard.repositories} onOpen={(repositoryId) => navigate(`/projects/${dashboard.project.project_id}/vulnerabilities${repositoryId ? `?repository=${repositoryId}` : ""}`)} />
       <ProjectStatusDashboard dashboard={dashboard} onOpenStep={onOpenStep} />
     </>
   );

@@ -27,6 +27,10 @@ provide the delivery evidence. Each computer keeps its own local working copy.
   reviews, and activity. Open issues, create planned branches and PRs, or jump
   to GitHub to start a review. The dashboard also shows each repository's
   latest successful GitHub Actions run on the plan source branch.
+- **Commit-specific vulnerability evidence.** Generate a CycloneDX inventory
+  from the exact plan-source commit, assess dependencies with OSV, and join the
+  result with exact-head CodeQL evidence. Missing or incomplete coverage is
+  shown honestly instead of being presented as a clean result.
 - **Git-backed collaboration.** Share the complete plan in
   `STATEFORGE_DPT.md` and import it on another computer from a participating clone.
 - **Continuous safe synchronization.** DPT keeps the shared plan, delivery
@@ -193,6 +197,7 @@ and recovery through your normal development workflow.
 
 - [Configuration and troubleshooting](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/configuration.md)
 - [Architecture and plan format](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/architecture.md)
+- [Vulnerability evidence and SBOM cache](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/security-evidence.md)
 - [AI regression-resistance workflow](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/ai-regression-resistance.md)
 - [AI agent interface](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/ai-agent-interface.md)
 - [Development and release guide](https://github.com/stateforge-org/stateforge-dpt/blob/main/docs/development.md)

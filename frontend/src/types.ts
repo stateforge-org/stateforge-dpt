@@ -122,6 +122,45 @@ export type RepositoryCiStatus = {
   message?: string;
 };
 
+export type SecurityState =
+  | "no_known_findings"
+  | "findings"
+  | "pending"
+  | "stale"
+  | "partial"
+  | "not_configured"
+  | "unavailable";
+
+export type SecuritySeverity =
+  | "critical"
+  | "high"
+  | "medium"
+  | "low"
+  | "unknown"
+  | "none";
+
+export type RepositorySecuritySummary = {
+  branch: string;
+  state: SecurityState;
+  highest_severity: SecuritySeverity;
+  dependency_findings: number;
+  codeql_findings: number;
+  observed_commit_sha: string | null;
+  refreshed_at: string | null;
+  coverage: Record<string, number>;
+  message?: string | null;
+  dependency_status: SecuritySourceStatus;
+  codeql_status: SecuritySourceStatus;
+};
+
+export type SecuritySourceStatus = {
+  state: string;
+  current: boolean;
+  complete: boolean;
+  configured: boolean;
+  message?: string | null;
+};
+
 export type Repository = {
   repository_id: string;
   project_id: string;
@@ -135,6 +174,63 @@ export type Repository = {
   clone_state: CloneState | null;
   clone_error: string | null;
   ci_cd: RepositoryCiStatus;
+  security: RepositorySecuritySummary;
+};
+
+export type SecurityFinding = {
+  kind: "dependency" | "codeql";
+  id: string;
+  summary: string;
+  severity: SecuritySeverity;
+  source_url?: string | null;
+  aliases?: string[];
+  component?: {
+    purl: string;
+    package_purl: string;
+    name: string;
+    version: string;
+    ecosystem: string;
+  };
+  fixed_versions?: string[];
+  location?: {
+    path?: string | null;
+    start_line?: number | null;
+    end_line?: number | null;
+  };
+};
+
+export type RepositorySecurityDetails = Omit<Repository, "ci_cd"> & {
+  dependency_findings: SecurityFinding[];
+  codeql_findings: SecurityFinding[];
+  sbom: null | {
+    sha256: string;
+    format: string;
+    spec_version: string;
+    component_count: number;
+    queryable_component_count: number;
+    dependency_material_digest: string;
+    adapter: string;
+    adapter_version: number;
+    tool: string;
+    tool_version: string;
+    generator: {
+      command?: string[];
+      duration_ms?: number;
+      exit_code?: number;
+      stderr?: string;
+    };
+  };
+};
+
+export type ProjectSecurity = {
+  summary: {
+    repositories: number;
+    fully_assessed: number;
+    with_findings: number;
+    severity_counts: Record<Exclude<SecuritySeverity, "none">, number>;
+  };
+  refresh: { state: "idle" | "running" };
+  repositories: RepositorySecurityDetails[];
 };
 
 export type GitHubAccount = {

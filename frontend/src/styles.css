@@ -294,6 +294,112 @@ a.repository-ci-card:hover { transform: translateY(-1px); filter: saturate(1.06)
 .repository-ci-empty { width: 100%; min-height: 43px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed #c9d4e2; border-radius: 9px; color: #65768d; background: #f8fafc; font-size: 10px; font-weight: 750; cursor: pointer; }
 .repository-ci-empty svg { width: 13px; height: 13px; }
 
+/* Vulnerability evidence */
+.repository-security-strip { margin-bottom: 14px; padding: 10px; border: 1px solid #dce4ed; border-radius: 14px; background: rgba(255,255,255,.8); box-shadow: 0 4px 13px rgba(33,48,72,.025); }
+.repository-security-strip-header { min-height: 25px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 4px 7px; }
+.repository-security-strip-header > span { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.repository-security-strip-header svg { width: 14px; height: 14px; color: #527093; }
+.repository-security-strip-header strong { color: #3c4d64; font-size: 11px; }
+.repository-security-strip-header code { overflow: hidden; padding: 2px 6px; border-radius: 5px; color: #687b92; background: #eef2f7; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.repository-security-strip-header button { border: 0; color: #3978e8; background: transparent; font-size: 9px; font-weight: 800; cursor: pointer; }
+.repository-security-cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: 8px; }
+.repository-security-card { min-width: 0; min-height: 52px; display: grid; grid-template-columns: 27px minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid; border-radius: 10px; color: #526177; text-align: left; cursor: pointer; transition: transform 140ms ease, box-shadow 140ms ease; }
+.repository-security-card:hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(32,46,68,.08); }
+.repository-security-card-icon { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 8px; background: rgba(255,255,255,.65); }
+.repository-security-card-icon svg { width: 14px; height: 14px; }
+.repository-security-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.repository-security-card strong, .repository-security-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repository-security-card strong { font-size: 11px; }
+.repository-security-card small { color: currentColor; font-size: 9px; opacity: .74; }
+.repository-security-card b { padding: 3px 6px; border-radius: 999px; background: rgba(255,255,255,.62); font-size: 9px; white-space: nowrap; }
+.repository-security-card-no_known_findings { border-color: #a6dcc9; color: #087451; background: #edf9f5; }
+.repository-security-card-findings { border-color: #ead192; color: #916210; background: #fff8e9; }
+.repository-security-card-findings.repository-security-card-critical, .repository-security-card-findings.repository-security-card-high { border-color: #e9aaaa; color: #a13636; background: #fdf0f0; }
+.repository-security-card-pending { border-color: #a9c8ff; color: #285cae; background: #eef5ff; }
+.repository-security-card-pending svg { animation: spin 1.15s linear infinite; }
+.repository-security-card-stale, .repository-security-card-partial { border-color: #ead192; color: #916210; background: #fff8e9; }
+.repository-security-card-not_configured { border-color: #cfd7e2; color: #66758a; background: #f4f6f8; }
+.repository-security-card-unavailable { border-color: #e9b4b4; color: #9b4040; background: #fdf0f0; }
+.security-summary-grid { display: grid; grid-template-columns: 1.35fr repeat(5,minmax(0,1fr)); gap: 10px; margin-bottom: 14px; }
+.security-summary-grid article { min-width: 0; padding: 14px; border: 1px solid #dce4ed; border-radius: 12px; background: #fff; }
+.security-summary-grid span, .security-summary-grid strong, .security-summary-grid em { display: block; }
+.security-summary-grid span { color: #7b899d; font-size: 9px; font-weight: 800; text-transform: capitalize; }
+.security-summary-grid strong { margin: 7px 0 3px; color: #1b2738; font-size: 23px; line-height: 1; }
+.security-summary-grid strong small { color: #7d8999; font-size: 11px; }
+.security-summary-grid em { color: #8490a2; font-size: 9px; font-style: normal; }
+.security-count-critical, .security-count-high { color: #b13241 !important; }
+.security-count-medium { color: #9a6514 !important; }
+.security-count-low, .security-count-unknown { color: #63748a !important; }
+.security-repository-panel, .security-findings-panel, .security-provenance { margin-bottom: 14px; padding: 16px; border: 1px solid #dce4ed; border-radius: 14px; background: #fff; }
+.security-repository-panel > header, .security-findings-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
+.security-repository-panel h2, .security-findings-panel h2 { margin: 0; color: #253449; font-size: 14px; }
+.security-repository-panel p, .security-findings-panel p { margin: 3px 0 0; color: #7d899b; font-size: 10px; }
+.security-repository-panel > header small { color: #8a96a7; font-size: 9px; }
+.security-repository-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 8px; }
+.security-repository-card { min-width: 0; display: grid; grid-template-columns: 18px minmax(0,1fr); gap: 5px 7px; padding: 10px; border: 1px solid #dce4ed; border-radius: 10px; color: #59687d; text-align: left; background: #f8fafc; cursor: pointer; }
+.security-repository-card.selected { border-color: #4a86ed; box-shadow: 0 0 0 2px rgba(58,123,237,.13); }
+.security-repository-card > span { grid-row: 1 / 3; }
+.security-repository-card svg { width: 15px; height: 15px; }
+.security-repository-card strong { overflow: hidden; color: #26364c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.security-repository-card b { font-size: 9px; }
+.security-repository-card small { grid-column: 2; color: #8995a5; font-size: 8px; }
+.security-repository-card-findings b { color: #b13241; }
+.security-repository-card-no_known_findings b { color: #087451; }
+.security-repository-card-partial b, .security-repository-card-stale b { color: #916210; }
+.security-evidence-banner { display: grid; grid-template-columns: 26px minmax(0,1fr) auto; align-items: center; gap: 12px; margin-bottom: 14px; padding: 13px 15px; border: 1px solid #dce4ed; border-radius: 12px; background: #f7f9fc; }
+.security-evidence-banner > svg { width: 21px; height: 21px; color: #64758b; }
+.security-evidence-banner strong { color: #27374d; font-size: 11px; }
+.security-evidence-banner p { margin: 3px 0 0; color: #718096; font-size: 9px; }
+.security-evidence-banner dl { display: flex; gap: 20px; margin: 0; }
+.security-evidence-banner dl div { min-width: 75px; }
+.security-evidence-banner dt { color: #8793a4; font-size: 8px; }
+.security-evidence-banner dd { margin: 3px 0 0; color: #26364b; font-size: 9px; }
+.security-evidence-banner-no_known_findings { border-color: #a6dcc9; background: #edf9f5; }
+.security-evidence-banner-no_known_findings > svg { color: #087451; }
+.security-evidence-banner-findings { border-color: #ead192; background: #fff8e9; }
+.security-evidence-banner-findings > svg { color: #916210; }
+.security-evidence-banner-findings.security-evidence-banner-critical, .security-evidence-banner-findings.security-evidence-banner-high { border-color: #e9aaaa; background: #fdf0f0; }
+.security-evidence-banner-findings.security-evidence-banner-critical > svg, .security-evidence-banner-findings.security-evidence-banner-high > svg { color: #a13636; }
+.security-evidence-banner-partial, .security-evidence-banner-stale { border-color: #ead192; background: #fff8e9; }
+.security-evidence-banner-partial > svg, .security-evidence-banner-stale > svg { color: #916210; }
+.security-tabs { display: flex; gap: 3px; padding: 3px; border-radius: 8px; background: #f1f4f8; }
+.security-tabs button { border: 0; border-radius: 6px; padding: 6px 9px; color: #718096; background: transparent; font-size: 9px; cursor: pointer; }
+.security-tabs button.active { color: #25354b; background: white; box-shadow: 0 1px 4px rgba(29,45,68,.1); }
+.security-tabs span { margin-left: 3px; }
+.security-table-wrap { overflow-x: auto; }
+.security-table { width: 100%; border-collapse: collapse; }
+.security-table th { padding: 9px 8px; border-bottom: 1px solid #e2e7ee; color: #7b899c; font-size: 9px; text-align: left; white-space: nowrap; }
+.security-table td { padding: 11px 8px; border-bottom: 1px solid #edf0f4; color: #34445a; font-size: 9px; vertical-align: top; }
+.security-table td strong, .security-table td small { display: block; }
+.security-table td small { margin-top: 4px; color: #8190a4; }
+.security-table td a { display: inline-flex; align-items: center; gap: 4px; color: #3475dd; text-decoration: none; }
+.security-table td a svg { width: 11px; height: 11px; }
+.security-severity { display: inline-flex; padding: 3px 6px; border-radius: 999px; font-size: 8px; font-weight: 850; text-transform: capitalize; }
+.security-severity-critical, .security-severity-high { color: #a72f3e; background: #ffedf0; }
+.security-severity-medium { color: #8b5e18; background: #fff5df; }
+.security-severity-low, .security-severity-unknown { color: #64758a; background: #edf1f5; }
+.security-empty { min-height: 150px; display: grid; place-items: center; align-content: center; gap: 5px; color: #77869a; text-align: center; }
+.security-empty svg { width: 25px; height: 25px; color: #7891b4; }
+.security-empty strong { color: #35465d; font-size: 11px; }
+.security-empty span { font-size: 9px; }
+.security-inventory > div:first-child { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin: 10px 0 13px; }
+.security-inventory > div:first-child span { padding: 12px; border-radius: 9px; background: #f5f7fa; }
+.security-inventory strong, .security-inventory small { display: block; }
+.security-inventory strong { color: #26364b; font-size: 18px; }
+.security-inventory small { margin-top: 3px; color: #8190a4; font-size: 9px; }
+.security-coverage { height: 7px; overflow: hidden; border-radius: 999px; background: #edf1f5; }
+.security-coverage i { display: block; height: 100%; border-radius: inherit; background: #15966b; }
+.security-inventory p { margin: 8px 0 5px; color: #758398; font-size: 9px; }
+.security-provenance { display: grid; grid-template-columns: 1.1fr 2fr; align-items: center; gap: 20px; }
+.security-provenance > div { display: flex; align-items: center; gap: 10px; }
+.security-provenance > div > svg { width: 22px; color: #4b6fae; }
+.security-provenance > div span { display: flex; flex-direction: column; gap: 2px; }
+.security-provenance > div strong { color: #2d3d53; font-size: 11px; }
+.security-provenance > div small { color: #8591a2; font-size: 9px; }
+.security-provenance dl { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 0; }
+.security-provenance dt { color: #8491a3; font-size: 8px; }
+.security-provenance dd { min-width: 0; margin: 4px 0 0; overflow: hidden; color: #314158; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Project position dashboard */
 .project-status-dashboard { display: grid; gap: 14px; }
 .status-position-panel { display: grid; grid-template-columns: minmax(0,1fr) 150px; gap: 20px 30px; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: white; box-shadow: 0 5px 15px rgba(33,48,72,.035); }
@@ -1729,6 +1835,14 @@ html[data-project-transition="exit"] .projects-page {
   .projects-topbar .brand-lockup span { display: none; }
   .projects-content { padding: 40px 18px; }
   .project-grid { grid-template-columns: 1fr; }
+  .security-summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .security-evidence-banner { grid-template-columns: 26px minmax(0,1fr); }
+  .security-evidence-banner dl { grid-column: 2; flex-wrap: wrap; }
+  .security-findings-panel > header { align-items: stretch; flex-direction: column; }
+  .security-tabs { overflow-x: auto; }
+  .security-tabs button { white-space: nowrap; }
+  .security-provenance { grid-template-columns: 1fr; }
+  .security-provenance dl { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .toolbar { align-items: stretch; flex-direction: column; }
   .search-input { min-height: 38px; min-width: 0; }
   .repo-chips { overflow-x: auto; flex-wrap: nowrap; }
