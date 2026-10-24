@@ -46,13 +46,19 @@ from stateforge_dpt.models import (
 from stateforge_dpt.plan_file import (
     LoadedPlan,
     PlanFileError,
+    append_security_cache,
     canonical_plan_json,
     load_plan,
     parse_manifest,
+    parse_security_cache,
     plan_fingerprint,
     render_manifest,
 )
 from stateforge_dpt.security import SecretStore, digest_token, new_token
+from stateforge_dpt.security_evidence.service import (
+    import_portable_security_cache,
+    portable_security_cache,
+)
 
 MAX_CONTEXT_FILE_BYTES = 2 * 1024 * 1024
 MAX_CONTEXT_PACKAGE_BYTES = 512 * 1024
@@ -2671,6 +2677,7 @@ class DPTService:
             revision: int | None = None
             fingerprint: str | None = None
             file_digest: str | None = None
+            security_cache_json: str | None = None
             error_message: str | None = None
             try:
                 content = read_remote_file(
@@ -2699,6 +2706,20 @@ class DPTService:
                 plan_json = canonical_plan_json(plan)
                 revision = plan.project.revision
                 file_digest = hashlib.sha256(content.encode()).hexdigest()
+                try:
+                    security_cache = parse_security_cache(content)
+                except PlanFileError:
+                    security_cache = None
+                if (
+                    security_cache
+                    and security_cache.get("plan_fingerprint") == fingerprint
+                ):
+                    security_cache_json = json.dumps(
+                        security_cache,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
             except (GitError, PlanFileError) as error:
                 error_message = str(error)
             return {
@@ -2709,6 +2730,7 @@ class DPTService:
                 "revision": revision,
                 "fingerprint": fingerprint,
                 "file_digest": file_digest,
+                "security_cache_json": security_cache_json,
                 "error": error_message,
                 "fetched_at": timestamp,
             }
@@ -2731,8 +2753,9 @@ class DPTService:
                 """
                 INSERT INTO remote_plan_snapshots(
                     repository_id, project_id, source_branch, plan_json,
-                    revision, fingerprint, file_digest, error, fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    revision, fingerprint, file_digest, security_cache_json,
+                    error, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -2743,6 +2766,7 @@ class DPTService:
                         snapshot["revision"],
                         snapshot["fingerprint"],
                         snapshot["file_digest"],
+                        snapshot["security_cache_json"],
                         snapshot["error"],
                         snapshot["fetched_at"],
                     )
@@ -2941,6 +2965,11 @@ class DPTService:
                     plan=plan,
                     fingerprint=str(snapshot["fingerprint"]),
                     file_digest=str(snapshot["file_digest"]),
+                    security_cache=(
+                        json.loads(str(snapshot["security_cache_json"]))
+                        if snapshot["security_cache_json"]
+                        else None
+                    ),
                 ),
                 False,
             )
@@ -3218,6 +3247,12 @@ class DPTService:
                     "DELETE FROM repositories WHERE repository_id = ?",
                     (repository_id,),
                 )
+
+        import_portable_security_cache(
+            connection,
+            project_id,
+            loaded.security_cache,
+        )
 
         for step in sorted(
             plan.steps, key=lambda item: (item.sort_order, item.step_id)
@@ -3661,7 +3696,9 @@ class DPTService:
         dashboard = self.dashboard(project_id)
         project = dashboard["project"]
         plan_revision = revision if revision is not None else project["revision"]
-        manifest = render_manifest(self.portable_plan(project_id, plan_revision))
+        portable = self.portable_plan(project_id, plan_revision)
+        fingerprint = plan_fingerprint(portable)
+        manifest = render_manifest(portable)
         lines = [
             manifest,
             "",
@@ -3788,7 +3825,10 @@ class DPTService:
                 "",
             ]
         )
-        return "\n".join(lines)
+        return append_security_cache(
+            "\n".join(lines),
+            portable_security_cache(self.database, project_id, fingerprint),
+        )
 
     def _validate_publish_snapshot(
         self,

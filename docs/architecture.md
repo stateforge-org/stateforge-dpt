@@ -57,6 +57,13 @@ newer revision, DPT can import it. If local unpublished edits exist, or two Git
 copies claim the same revision with different fingerprints, DPT stops and asks
 the user to choose rather than silently overwriting a plan.
 
+The file may also contain a separately checksummed security-cache block. It
+stores validated SBOM material only and is excluded from the portable plan's
+semantic fingerprint and revision. Cache-only differences therefore cannot
+create a plan conflict. Current OSV and CodeQL observations remain local SQLite
+evidence because both can change without a repository commit. A malformed cache
+is ignored without invalidating the independently authenticated project plan.
+
 Each project also records a portable plan source branch, conventionally the
 shared parent branch from which milestone branches are derived (for example,
 `mvp/implementation`). Reconciliation runs a narrow Git fetch in each attached

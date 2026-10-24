@@ -22,9 +22,16 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from stateforge_dpt.config import Settings
 from stateforge_dpt.git import GitError, clone_identity, fetch_remote_branch
 
+MAX_GITHUB_PAGES = 100
+
 
 class GitHubError(RuntimeError):
     """Raised for an unsuccessful GitHub operation."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        """Retain the HTTP status needed for honest feature-state mapping."""
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,7 +447,7 @@ class GitHubClient:
         """Return repositories visible to the authenticated user."""
         repositories: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=30) as client:
-            for page in range(1, 11):
+            for page in range(1, MAX_GITHUB_PAGES + 1):
                 page_items = await self._request(
                     client,
                     access_token,
@@ -723,7 +730,7 @@ class GitHubClient:
         """Return every branch available for pull-request selection."""
         branches: list[str] = []
         async with httpx.AsyncClient(timeout=30) as client:
-            for page in range(1, 11):
+            for page in range(1, MAX_GITHUB_PAGES + 1):
                 page_items = await self._request(
                     client,
                     access_token,
@@ -759,6 +766,126 @@ class GitHubClient:
             return None
         run = runs[0]
         return dict(run) if isinstance(run, dict) else None
+
+    async def branch_head(
+        self,
+        access_token: str,
+        full_name: str,
+        branch: str,
+    ) -> str:
+        """Resolve one branch to the exact commit used by security evidence."""
+        encoded = quote(branch, safe="")
+        async with httpx.AsyncClient(timeout=30) as client:
+            reference = await self._request(
+                client,
+                access_token,
+                "GET",
+                f"/repos/{full_name}/git/ref/heads/{encoded}",
+            )
+        sha = reference.get("object", {}).get("sha")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise GitHubError("GitHub returned an invalid branch head")
+        return sha
+
+    async def repository_archive(
+        self,
+        access_token: str,
+        full_name: str,
+        commit_sha: str,
+        *,
+        max_bytes: int,
+    ) -> bytes:
+        """Download a bounded zipball for one immutable repository commit."""
+        if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+            raise GitHubError("Repository archive requires an exact commit SHA")
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {access_token}",
+            "X-GitHub-Api-Version": "2026-03-10",
+        }
+        chunks: list[bytes] = []
+        size = 0
+        async with (
+            httpx.AsyncClient(timeout=60, follow_redirects=True) as client,
+            client.stream(
+                "GET",
+                f"{self.api_url}/repos/{full_name}/zipball/{commit_sha}",
+                headers=headers,
+            ) as response,
+        ):
+            if response.status_code >= 400:
+                detail = (await response.aread()).decode(errors="replace")[:1000]
+                raise GitHubError(
+                    f"GitHub returned {response.status_code}: {detail}",
+                    response.status_code,
+                )
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > max_bytes:
+                    raise GitHubError("Repository archive exceeds the safety limit")
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    async def codeql_analyses(
+        self,
+        access_token: str,
+        full_name: str,
+        branch: str,
+    ) -> list[dict[str, Any]]:
+        """Return CodeQL analyses associated with one complete branch ref."""
+        ref = f"refs/heads/{branch}"
+        analyses: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=30) as client:
+            for page in range(1, 11):
+                values = await self._request(
+                    client,
+                    access_token,
+                    "GET",
+                    f"/repos/{full_name}/code-scanning/analyses",
+                    params={
+                        "ref": ref,
+                        "tool_name": "CodeQL",
+                        "per_page": 100,
+                        "page": page,
+                    },
+                )
+                analyses.extend(dict(value) for value in values)
+                if len(values) < 100:
+                    break
+            else:
+                raise GitHubError("CodeQL analyses exceeded the pagination limit")
+        return analyses
+
+    async def codeql_alerts(
+        self,
+        access_token: str,
+        full_name: str,
+        branch: str,
+    ) -> list[dict[str, Any]]:
+        """Return every open CodeQL alert reported for one branch."""
+        ref = f"refs/heads/{branch}"
+        alerts: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=30) as client:
+            for page in range(1, MAX_GITHUB_PAGES + 1):
+                values = await self._request(
+                    client,
+                    access_token,
+                    "GET",
+                    f"/repos/{full_name}/code-scanning/alerts",
+                    params={
+                        "ref": ref,
+                        "state": "open",
+                        "tool_name": "CodeQL",
+                        "per_page": 100,
+                        "page": page,
+                    },
+                )
+                alerts.extend(dict(value) for value in values)
+                if len(values) < 100:
+                    break
+            else:
+                raise GitHubError("CodeQL alerts exceeded the pagination limit")
+        return alerts
 
     async def compare_branches(
         self,
@@ -970,7 +1097,10 @@ class GitHubClient:
             ]
             if validation_details:
                 message = f"{message} — {'; '.join(validation_details)}"
-            raise GitHubError(f"GitHub returned {response.status_code}: {message}")
+            raise GitHubError(
+                f"GitHub returned {response.status_code}: {message}",
+                response.status_code,
+            )
         payload = response.json()
         etag = response.headers.get("etag")
         if cache_key is not None and etag:

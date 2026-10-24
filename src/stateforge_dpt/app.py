@@ -55,6 +55,7 @@ from stateforge_dpt.proposals import (
     ProposalDecisionRequest,
 )
 from stateforge_dpt.security import SecretStore
+from stateforge_dpt.security_evidence.service import SecurityEvidenceService
 from stateforge_dpt.service import DPTError, DPTService
 
 SESSION_COOKIE = "stateforge_dpt_session"
@@ -107,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     service = DPTService(database, SecretStore(resolved.data_dir))
     proposals = PlanProposalService(database, service)
     github = GitHubClient(resolved)
+    security_evidence = SecurityEvidenceService(database, github)
     plan_publisher = GitHubAppPlanPublisher(resolved)
     reconciliation_tasks: dict[str, asyncio.Task[dict[str, object]]] = {}
     reconciliation_reporters: dict[str, set[ReconciliationReporter]] = {}
@@ -114,6 +116,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     reconciliation_completed_at: dict[str, float] = {}
     reconciliation_full_at: dict[str, float] = {}
     reconciliation_failures: dict[str, int] = {}
+    security_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
+    security_progress: dict[str, dict[str, object]] = {}
     background_session_token: str | None = None
     reconciliation_wakeup: asyncio.Event | None = None
 
@@ -173,6 +177,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if background_task is not None:
                 background_task.cancel()
                 await asyncio.gather(background_task, return_exceptions=True)
+            for task in security_tasks.values():
+                task.cancel()
+            await asyncio.gather(*security_tasks.values(), return_exceptions=True)
 
     app = FastAPI(
         title="StateForge DPT",
@@ -184,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.service = service
     app.state.github = github
+    app.state.security_evidence = security_evidence
     app.state.plan_publisher = plan_publisher
     app.state.proposals = proposals
     app.state.mcp_server = mcp_server
@@ -309,6 +317,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         for repository, ci_status in zip(repositories, statuses, strict=True):
             repository["ci_cd"] = ci_status
+
+    def attach_repository_security_status(dashboard: dict[str, Any]) -> None:
+        """Attach persisted summaries without starting scans on a dashboard read."""
+        project = dashboard["project"]
+        branch = str(project.get("plan_source_branch") or "mvp/implementation")
+        summaries = security_evidence.repository_summaries(
+            str(project["project_id"]), branch
+        )
+        for repository in dashboard["repositories"]:
+            repository["security"] = summaries[str(repository["repository_id"])]
+
+    def schedule_security_refresh(
+        project_id: str,
+        current: dict[str, object],
+        *,
+        force: bool,
+    ) -> asyncio.Task[dict[str, Any]]:
+        """Share one background assessment across reconciliation and the UI."""
+        existing = security_tasks.get(project_id)
+        if existing is not None and not existing.done():
+            return existing
+        started_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        security_progress[project_id] = {
+            "state": "running",
+            "started_at": started_at,
+            "completed_at": None,
+            "title": "Preparing security assessment",
+            "detail": "Resolving repository branch heads.",
+            "repository": None,
+            "repository_index": 0,
+            "repository_count": len(service.repositories(project_id)),
+        }
+
+        async def report(event: dict[str, object]) -> None:
+            security_progress[project_id] = {
+                **security_progress[project_id],
+                **event,
+                "state": "running",
+            }
+
+        async def run() -> dict[str, Any]:
+            try:
+                result = await security_evidence.refresh_project(
+                    str(current["access_token"]),
+                    service.project(project_id),
+                    service.repositories(project_id),
+                    report=report,
+                    force=force,
+                )
+            except Exception as error:
+                security_progress[project_id] = {
+                    **security_progress[project_id],
+                    "state": "failed",
+                    "completed_at": datetime.now(UTC)
+                    .replace(microsecond=0)
+                    .isoformat(),
+                    "title": "Security assessment failed",
+                    "detail": str(error),
+                }
+                raise
+            security_progress[project_id] = {
+                **security_progress[project_id],
+                "state": "completed",
+                "completed_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+                "title": "Security assessment complete",
+                "detail": "Stored current repository evidence.",
+            }
+            return result
+
+        task = asyncio.create_task(run())
+        security_tasks[project_id] = task
+
+        def finish(completed: asyncio.Task[dict[str, Any]]) -> None:
+            if security_tasks.get(project_id) is completed:
+                security_tasks.pop(project_id, None)
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(finish)
+        return task
 
     async def reconcile_github_evidence(
         project_id: str,
@@ -661,6 +749,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
         await asyncio.gather(*(inspect_context(step) for step in context_steps))
+        await security_evidence.refresh_project(
+            str(current["access_token"]),
+            project,
+            repositories,
+            report=report,
+            force=False,
+        )
         dashboard = service.dashboard(project_id)
         service.record_project_status_snapshot(project_id, dashboard)
         return {
@@ -1053,7 +1148,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if error.status_code != 401:
                     raise
         await attach_repository_ci_status(dashboard, current)
+        attach_repository_security_status(dashboard)
         return dashboard
+
+    @app.get("/api/projects/{project_id}/security")
+    async def project_security(project_id: str) -> dict[str, Any]:
+        """Return persisted repository findings and evidence provenance."""
+        project = service.project(project_id)
+        result = security_evidence.details(
+            project_id,
+            str(project.get("plan_source_branch") or "mvp/implementation"),
+        )
+        task = security_tasks.get(project_id)
+        result["refresh"] = security_progress.get(
+            project_id,
+            {
+                "state": "running" if task is not None and not task.done() else "idle",
+                "started_at": None,
+                "completed_at": None,
+            },
+        )
+        return result
+
+    @app.get("/api/projects/{project_id}/security/repositories/{repository_id}/sbom")
+    async def repository_security_sbom(
+        project_id: str, repository_id: str
+    ) -> dict[str, Any]:
+        """Return one current validated SBOM without inflating dashboard payloads."""
+        service.project(project_id)
+        result = security_evidence.sbom_document(project_id, repository_id)
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No current validated SBOM is available for this repository",
+            )
+        return result
+
+    @app.post("/api/projects/{project_id}/security/refresh", status_code=202)
+    async def refresh_project_security(
+        project_id: str,
+        request: Request,
+        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ) -> dict[str, object]:
+        """Start one user-authenticated, exact-head security refresh."""
+        require_same_origin(request)
+        current = await authenticated_session(session_token)
+        running = security_tasks.get(project_id)
+        if running is not None and not running.done():
+            return {"state": "running", "joined": True}
+        schedule_security_refresh(project_id, current, force=True)
+        return {"state": "started", "joined": False}
 
     @app.put("/api/projects/{project_id}/plan/source-branch")
     async def update_plan_source_branch(
