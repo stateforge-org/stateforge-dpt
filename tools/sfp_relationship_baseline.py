@@ -17,7 +17,7 @@ from stateforge_dpt.sfp_baseline import (
 
 def _git(repository: Path, *arguments: str) -> str:
     completed = subprocess.run(  # noqa: S603
-        ["git", "-C", str(repository), *arguments],
+        ["git", "-C", str(repository), *arguments],  # noqa: S607
         check=True,
         capture_output=True,
         text=True,

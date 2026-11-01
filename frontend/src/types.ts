@@ -602,6 +602,7 @@ export type RelationshipGraphNode = {
   node_id: string;
   repository_alias: string;
   kind:
+    | "procedure"
     | "protobuf_package"
     | "service"
     | "rpc"
@@ -616,6 +617,18 @@ export type RelationshipGraphNode = {
   path: string;
   symbol: string | null;
   parent_node_id: string | null;
+  procedure_id: string | null;
+  implementation_state: "implemented" | "expected";
+  snapshot_sha?: string | null;
+  github_url?: string | null;
+  observation?: {
+    state: "verified" | "expected" | "missing" | "invalid" | "unavailable" | "unverified" | "stale";
+    detail: string;
+    verified_at: string;
+    line_start: number | null;
+    line_end: number | null;
+    evidence: Record<string, unknown>;
+  } | null;
 };
 
 export type RelationshipGraphRelationship = {
@@ -631,9 +644,9 @@ export type RelationshipGraphRelationship = {
     | "translates"
     | "exposes"
     | "tests";
+  directness: "direct" | "transitive" | "conceptual";
   introduced_by_change_set_id: string | null;
   verification: {
-    state: "declared" | "verified" | "missing" | "stale" | "invalid";
     method:
       | "protobuf_descriptor"
       | "python_ast"
@@ -644,6 +657,12 @@ export type RelationshipGraphRelationship = {
       | "manual";
     details: string;
   };
+  observation?: {
+    state: "verified" | "expected" | "missing" | "invalid" | "unavailable" | "unverified" | "stale";
+    detail: string;
+    verified_at: string;
+    evidence: Record<string, unknown>;
+  } | null;
 };
 
 export type RelationshipGraph = {
@@ -653,6 +672,7 @@ export type RelationshipGraph = {
   deployment_status: RelationshipGraphSummary["deployment_status"];
   graph_revision: number;
   published_graph_revision: number;
+  verification_status: "verified" | "partial" | "invalid" | "not_run";
   tracking_started_at: string | null;
   repository_snapshots: Array<{
     repository_alias: string;
@@ -668,9 +688,18 @@ export type RelationshipGraph = {
     reason: string;
     reviewed_at: string;
     reviewed_by: string;
+    html_url: string;
   }>;
   nodes: RelationshipGraphNode[];
   relationships: RelationshipGraphRelationship[];
+  metrics: {
+    implemented_nodes: number;
+    expected_nodes: number;
+    verified_subjects: number;
+    drift_findings: number;
+    evidence_coverage: number;
+    procedures: number;
+  };
   pending_redeployments: PendingGraphRedeployment[];
 };
 

@@ -7,11 +7,54 @@ from stateforge_dpt.app import create_app
 from stateforge_dpt.config import DEFAULT_GITHUB_CLIENT_ID, Settings
 from stateforge_dpt.plan_file import parse_manifest
 from stateforge_dpt.proposals import PLAN_OPERATION_ADAPTER
+from stateforge_dpt.service import (
+    _graph_symbol_location,
+    _verify_graph_relationship_evidence,
+)
 from stateforge_dpt.sfp_baseline import PROTOCOL_MODULES, sfp_baseline_operations
 
 MERGE_SHA = "a" * 40
 PROTOCOL_SHA = "b" * 40
 PROVIDER_SHA = "c" * 40
+
+
+def test_graph_symbol_resolver_returns_exact_nested_python_lines() -> None:
+    content = "\n".join(
+        (
+            "from generated import BootstrapServiceStub",
+            "",
+            "class Client:",
+            "    async def perform_handshake(self):",
+            "        return BootstrapServiceStub().Handshake()",
+        )
+    )
+    assert _graph_symbol_location("function", "Client.perform_handshake", content) == (
+        4,
+        5,
+    )
+    state, detail, evidence = _verify_graph_relationship_evidence(
+        "callsite",
+        "direct",
+        {"symbol": "Client.perform_handshake", "path": "client.py"},
+        {"symbol": "stateforge.sfp.bootstrap.v1.BootstrapService.Handshake"},
+        content,
+    )
+    assert state == "verified"
+    assert "Handshake" in detail
+    assert evidence["matches"]
+
+
+def test_conceptual_graph_edges_never_masquerade_as_code_evidence() -> None:
+    state, detail, evidence = _verify_graph_relationship_evidence(
+        "manual",
+        "conceptual",
+        {"symbol": "Provider"},
+        {"symbol": "Protocol"},
+        "Protocol",
+    )
+    assert state == "unverified"
+    assert "conceptual" in detail
+    assert evidence["directness"] == "conceptual"
 
 
 def settings(tmp_path: Path, *, mcp_enabled: bool = False) -> Settings:
@@ -250,6 +293,26 @@ def test_merged_milestone_requires_graph_redeployment_and_round_trips(
         assert len(graph["nodes"]) == 3
         assert len(graph["relationships"]) == 2
 
+        verified = client.post(
+            f"/api/projects/{project['project_id']}/relationship-graph/verify"
+        ).json()
+        assert verified["verification_status"] == "partial"
+        assert verified["failures"] == []
+        persisted = client.get(
+            f"/api/projects/{project['project_id']}/relationship-graph"
+        ).json()
+        assert persisted["metrics"]["evidence_coverage"] == 100
+        assert {item["observation"]["state"] for item in persisted["nodes"]} == {
+            "unavailable"
+        }
+
+        registry = client.get(
+            f"/api/projects/{project['project_id']}/relationship-graph/registry",
+            params={"repository_alias": "agent", "page_size": 1},
+        ).json()
+        assert registry["total"] == 1
+        assert registry["nodes"][0]["node_id"] == "agent.trigger.consume"
+
         neighborhood = client.get(
             f"/api/projects/{project['project_id']}/relationship-graph/symbols",
             params={"node_id": "sfp.trigger.publish"},
@@ -334,16 +397,30 @@ def test_initial_sfp_baseline_covers_every_catalogued_protocol_module() -> None:
         if operation.kind == "upsert_graph_relationship"
     }
     assert protocol_ids <= relationship_targets
-    assert len(
-        {
-            operation.node.node_id
-            for operation in parsed
-            if operation.kind == "upsert_graph_node"
-        }
-    ) == 54
-    assert sum(
-        operation.kind == "upsert_graph_relationship" for operation in parsed
-    ) == 51
+    graph_nodes = {
+        operation.node.node_id: operation.node
+        for operation in parsed
+        if operation.kind == "upsert_graph_node"
+    }
+    assert {
+        "sfp.bootstrap.rpc.Handshake",
+        "sfp.manifest.message.GetManifestResponse",
+        "provider.trigger_publication.rpc.StreamTriggers",
+        "agent.trigger_publication.rpc.consume",
+    } <= graph_nodes.keys()
+    assert (
+        graph_nodes[
+            "provider.operation_admission.rpc.StartOperation"
+        ].implementation_state
+        == "expected"
+    )
+    graph_relationships = [
+        operation.relationship
+        for operation in parsed
+        if operation.kind == "upsert_graph_relationship"
+    ]
+    assert any(item.directness == "direct" for item in graph_relationships)
+    assert any(item.directness == "conceptual" for item in graph_relationships)
 
 
 def test_mcp_allows_one_reviewed_initial_graph_baseline(tmp_path: Path) -> None:

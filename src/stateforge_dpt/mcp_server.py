@@ -611,6 +611,8 @@ def create_mcp_server(
             "deployment_status": graph["deployment_status"],
             "graph_revision": graph["graph_revision"],
             "published_graph_revision": graph["published_graph_revision"],
+            "verification_status": graph["verification_status"],
+            "metrics": graph["metrics"],
             "repository_snapshots": graph["repository_snapshots"],
             "reviewed_pull_requests": graph["change_sets"],
             "pending_redeployments": graph["pending_redeployments"],
@@ -649,17 +651,49 @@ def create_mcp_server(
         return {"schema_version": 1, **result}
 
     @server.tool(
-        title="Get the cross-repository implementation graph",
+        title="Get a cross-repository implementation graph page",
         description=(
-            "Use this only when the complete graph is needed. Prefer the symbol "
-            "query for bounded impact analysis."
+            "Use this for a bounded, optionally procedure/repository-filtered graph "
+            "page. Prefer the symbol query for focused impact analysis."
         ),
         annotations=READ_ONLY,
         structured_output=True,
     )
-    def get_cross_repository_graph(project_id: str) -> dict[str, Any]:
+    def get_cross_repository_graph(
+        project_id: str,
+        procedure_id: str | None = None,
+        repository_alias: str | None = None,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> dict[str, Any]:
         try:
-            return {"schema_version": 1, **service.relationship_graph(project_id)}
+            graph = service.relationship_graph(project_id)
+            registry = service.relationship_graph_registry(
+                project_id,
+                procedure_id=procedure_id,
+                repository_alias=repository_alias,
+                page=page,
+                page_size=min(page_size, 500),
+            )
+            node_ids = {item["node_id"] for item in registry["nodes"]}
+            return {
+                "schema_version": 1,
+                "project_id": project_id,
+                "deployment_status": graph["deployment_status"],
+                "verification_status": graph["verification_status"],
+                "graph_revision": graph["graph_revision"],
+                "metrics": graph["metrics"],
+                "total_nodes": registry["total"],
+                "page": registry["page"],
+                "page_size": registry["page_size"],
+                "nodes": registry["nodes"],
+                "relationships": [
+                    item
+                    for item in graph["relationships"]
+                    if item["source_node_id"] in node_ids
+                    and item["target_node_id"] in node_ids
+                ],
+            }
         except DPTError as error:
             raise _tool_error(error) from error
 
@@ -803,8 +837,7 @@ def create_mcp_server(
                 and not graph["relationships"]
             )
             reviews_merged_pr = any(
-                operation.kind == "review_merged_pull_request"
-                for operation in parsed
+                operation.kind == "review_merged_pull_request" for operation in parsed
             )
             if not is_initial_baseline and not reviews_merged_pr:
                 raise DPTError(
@@ -819,8 +852,7 @@ def create_mcp_server(
                     "snapshots"
                 )
             if is_initial_baseline and not any(
-                operation.kind == "initialize_graph_tracking"
-                for operation in parsed
+                operation.kind == "initialize_graph_tracking" for operation in parsed
             ):
                 raise DPTError(
                     "The initial relationship graph baseline must initialize merge "

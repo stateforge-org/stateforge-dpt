@@ -378,8 +378,7 @@ def _graph_symbol_present(kind: str, symbol: str | None, content: str) -> bool:
     }:
         declarations = _python_declarations(content)
         return any(
-            symbol == item or symbol.endswith(f".{item}")
-            for item in declarations
+            symbol == item or symbol.endswith(f".{item}") for item in declarations
         )
     name = symbol.rsplit(".", 1)[-1]
     if kind == "protobuf_package":
@@ -392,6 +391,164 @@ def _graph_symbol_present(kind: str, symbol: str | None, content: str) -> bool:
     if keyword:
         return bool(re.search(rf"\b{keyword}\s+{re.escape(name)}\b", content))
     return symbol in content
+
+
+def _graph_symbol_location(
+    kind: str,
+    symbol: str | None,
+    content: str,
+) -> tuple[int, int] | None:
+    """Resolve a graph symbol to an exact one-based source range."""
+    if not symbol:
+        return (1, 1)
+    if kind in {
+        "python_module",
+        "class",
+        "function",
+        "storage_contract",
+        "storage_implementation",
+        "test",
+    }:
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return None
+        matches: list[tuple[str, int, int]] = []
+
+        def visit(nodes: list[ast.stmt], parents: tuple[str, ...] = ()) -> None:
+            for item in nodes:
+                if isinstance(
+                    item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    qualified = ".".join((*parents, item.name))
+                    matches.append(
+                        (
+                            qualified,
+                            int(item.lineno),
+                            int(getattr(item, "end_lineno", item.lineno)),
+                        )
+                    )
+                    visit(item.body, (*parents, item.name))
+
+        visit(tree.body)
+        for qualified, start, end in matches:
+            if symbol == qualified or symbol.endswith(f".{qualified}"):
+                return start, end
+        return None
+    name = symbol.rsplit(".", 1)[-1]
+    if kind == "protobuf_package":
+        pattern = rf"^\s*package\s+{re.escape(symbol)}\s*;"
+    else:
+        keyword = {"service": "service", "rpc": "rpc", "message": "message"}.get(kind)
+        if not keyword:
+            return None
+        pattern = rf"^\s*{keyword}\s+{re.escape(name)}\b"
+    match = re.search(pattern, content, flags=re.MULTILINE)
+    if match is None:
+        return None
+    start = content.count("\n", 0, match.start()) + 1
+    return start, start
+
+
+def _python_imports(content: str) -> set[str]:
+    """Return import paths and imported names from one Python source file."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return set()
+    imports: set[str] = set()
+    for item in ast.walk(tree):
+        if isinstance(item, ast.Import):
+            imports.update(alias.name for alias in item.names)
+        elif isinstance(item, ast.ImportFrom):
+            module = item.module or ""
+            imports.add(module)
+            imports.update(
+                f"{module}.{alias.name}" if module else alias.name
+                for alias in item.names
+            )
+    return imports
+
+
+def _verify_graph_relationship_evidence(
+    method: str,
+    directness: str,
+    source: dict[str, Any],
+    target: dict[str, Any],
+    source_content: str,
+) -> tuple[str, str, dict[str, Any]]:
+    """Verify an edge itself; endpoint existence alone is never edge evidence."""
+    if directness == "conceptual" or method == "manual":
+        return (
+            "unverified",
+            "This is a declared conceptual relationship and requires human evidence.",
+            {"method": method, "directness": directness},
+        )
+    target_symbol = str(target.get("symbol") or "")
+    target_name = target_symbol.rsplit(".", 1)[-1]
+    target_module = str(target.get("path") or "").removesuffix(".py").replace("/", ".")
+    target_module = target_module.removeprefix("src.")
+    if method == "import":
+        imports = _python_imports(source_content)
+        candidates = {
+            target_module,
+            target_name,
+            *(value for value in target_module.split(".") if value),
+        }
+        matches = sorted(
+            value
+            for value in imports
+            if value in candidates
+            or any(value.endswith(f".{candidate}") for candidate in candidates)
+        )
+        if matches:
+            return "verified", f"Import evidence: {matches[0]}", {"imports": matches}
+        return (
+            "invalid",
+            "No import connecting the source to the target was found.",
+            {"imports": sorted(imports)},
+        )
+    if method == "inheritance":
+        expected = {target_name, f"{target_name}Servicer"}
+        try:
+            tree = ast.parse(source_content)
+        except SyntaxError:
+            return "invalid", "The source could not be parsed as Python.", {}
+        bases = {
+            ast.unparse(base).rsplit(".", 1)[-1]
+            for item in ast.walk(tree)
+            if isinstance(item, ast.ClassDef)
+            for base in item.bases
+        }
+        matches = sorted(expected & bases)
+        if matches:
+            return (
+                "verified",
+                f"Inheritance evidence: {matches[0]}",
+                {"bases": sorted(bases)},
+            )
+        return (
+            "invalid",
+            "The expected service base class was not found.",
+            {"bases": sorted(bases)},
+        )
+    if method in {"callsite", "test_reference", "protobuf_descriptor", "python_ast"}:
+        reference_candidates = [
+            value for value in {target_name, target_symbol} if value
+        ]
+        matches = [value for value in reference_candidates if value in source_content]
+        if matches:
+            return "verified", f"Reference evidence: {matches[0]}", {"matches": matches}
+        return (
+            "invalid",
+            "No direct source reference to the target was found.",
+            {"candidates": reference_candidates},
+        )
+    return (
+        "unverified",
+        f"Verifier method {method!r} is not automated.",
+        {"method": method},
+    )
 
 
 def _resource_selectors(path: str, content: str) -> list[dict[str, str]]:
@@ -2472,9 +2629,7 @@ class DPTService:
                 ],
                 "node_count": len(relationship_graph["nodes"]),
                 "relationship_count": len(relationship_graph["relationships"]),
-                "pending_redeployments": relationship_graph[
-                    "pending_redeployments"
-                ],
+                "pending_redeployments": relationship_graph["pending_redeployments"],
             },
         }
 
@@ -2672,6 +2827,8 @@ class DPTService:
                         "path": row["path"],
                         "symbol": row["symbol"],
                         "parent_node_id": row["parent_node_id"],
+                        "procedure_id": row["procedure_id"],
+                        "implementation_state": row["implementation_state"],
                     }
                 )
                 for row in nodes
@@ -2683,11 +2840,11 @@ class DPTService:
                         "source_node_id": row["source_node_id"],
                         "target_node_id": row["target_node_id"],
                         "relationship_type": row["relationship_type"],
+                        "directness": row["directness"],
                         "introduced_by_change_set_id": row[
                             "introduced_by_change_set_id"
                         ],
                         "verification": {
-                            "state": row["verification_state"],
                             "method": row["verification_method"],
                             "details": row["verification_details"],
                         },
@@ -2722,6 +2879,13 @@ class DPTService:
                 ORDER BY COALESCE(a.merged_at, a.updated_at), a.number
                 """,
                 (project_id,),
+            ).fetchall()
+            observations = connection.execute(
+                """
+                SELECT * FROM cross_repository_graph_verification_observations
+                WHERE project_id = ? AND graph_revision = ?
+                """,
+                (project_id, graph.revision),
             ).fetchall()
         pending = []
         tracking_started_at = (
@@ -2761,9 +2925,89 @@ class DPTService:
         published_revision = (
             int(metadata["published_graph_revision"]) if metadata else 0
         )
+        observation_by_subject = {
+            (str(row["subject_kind"]), str(row["subject_id"])): _row_dict(row)
+            for row in observations
+        }
+        repositories = {
+            str(item["alias"]): item for item in self.repositories(project_id)
+        }
+        snapshots = {
+            item.repository_alias: item.commit_sha
+            for item in graph.repository_snapshots
+        }
+        enriched_nodes: list[dict[str, Any]] = []
+        for item in graph.nodes:
+            node = item.model_dump(mode="json")
+            observed = observation_by_subject.get(("node", item.node_id))
+            repository = repositories.get(item.repository_alias)
+            revision = snapshots.get(item.repository_alias)
+            line_start = (
+                int(observed["line_start"])
+                if observed and observed["line_start"]
+                else None
+            )
+            line_end = (
+                int(observed["line_end"])
+                if observed and observed["line_end"]
+                else line_start
+            )
+            github_url = None
+            if repository and revision and item.implementation_state == "implemented":
+                github_url = (
+                    f"https://github.com/{repository['github_full_name']}/blob/"
+                    f"{revision}/{item.path}"
+                )
+                if line_start:
+                    github_url += f"#L{line_start}-L{line_end}"
+            node["github_url"] = github_url
+            node["snapshot_sha"] = revision
+            node["observation"] = (
+                {
+                    "state": observed["state"],
+                    "detail": observed["detail"],
+                    "verified_at": observed["verified_at"],
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "evidence": json.loads(observed["evidence_json"] or "{}"),
+                }
+                if observed
+                else None
+            )
+            enriched_nodes.append(node)
+        enriched_relationships: list[dict[str, Any]] = []
+        for graph_relationship in graph.relationships:
+            relationship = graph_relationship.model_dump(mode="json")
+            observed = observation_by_subject.get(
+                ("relationship", graph_relationship.relationship_id)
+            )
+            relationship["observation"] = (
+                {
+                    "state": observed["state"],
+                    "detail": observed["detail"],
+                    "verified_at": observed["verified_at"],
+                    "evidence": json.loads(observed["evidence_json"] or "{}"),
+                }
+                if observed
+                else None
+            )
+            enriched_relationships.append(relationship)
+        observed_states = [str(row["state"]) for row in observations]
         invalid = any(
-            item.verification.state == "invalid" for item in graph.relationships
+            state in {"invalid", "missing", "stale"} for state in observed_states
         )
+        subject_count = len(graph.nodes) + len(graph.relationships)
+        if invalid:
+            verification_status = "invalid"
+        elif not subject_count or (
+            len(observations) == subject_count
+            and all(state in {"verified", "expected"} for state in observed_states)
+        ):
+            verification_status = "verified"
+        elif observations:
+            verification_status = "partial"
+        else:
+            verification_status = "not_run"
         if invalid:
             status = "invalid"
         elif pending:
@@ -2779,17 +3023,46 @@ class DPTService:
             "deployment_status": status,
             "graph_revision": graph.revision,
             "published_graph_revision": published_revision,
+            "verification_status": verification_status,
             "tracking_started_at": graph.tracking_started_at,
             "repository_snapshots": [
                 item.model_dump(mode="json") for item in graph.repository_snapshots
             ],
             "change_sets": [
-                item.model_dump(mode="json") for item in graph.change_sets
+                {
+                    **item.model_dump(mode="json"),
+                    "html_url": (
+                        f"https://github.com/{repositories[item.repository_alias]['github_full_name']}"
+                        f"/pull/{item.pull_request_number}"
+                    ),
+                }
+                for item in graph.change_sets
             ],
-            "nodes": [item.model_dump(mode="json") for item in graph.nodes],
-            "relationships": [
-                item.model_dump(mode="json") for item in graph.relationships
-            ],
+            "nodes": enriched_nodes,
+            "relationships": enriched_relationships,
+            "metrics": {
+                "implemented_nodes": sum(
+                    item.implementation_state == "implemented" for item in graph.nodes
+                ),
+                "expected_nodes": sum(
+                    item.implementation_state == "expected" for item in graph.nodes
+                ),
+                "verified_subjects": sum(
+                    state == "verified" for state in observed_states
+                ),
+                "drift_findings": sum(
+                    state in {"invalid", "missing", "stale"}
+                    for state in observed_states
+                ),
+                "evidence_coverage": (
+                    round(len(observations) / subject_count * 100)
+                    if subject_count
+                    else 100
+                ),
+                "procedures": len(
+                    {item.procedure_id for item in graph.nodes if item.procedure_id}
+                ),
+            },
             "pending_redeployments": pending,
         }
 
@@ -2809,8 +3082,7 @@ class DPTService:
             for item in nodes
             if (node_id is None or item["node_id"] == node_id)
             and (
-                repository_alias is None
-                or item["repository_alias"] == repository_alias
+                repository_alias is None or item["repository_alias"] == repository_alias
             )
             and (
                 symbol is None
@@ -2821,8 +3093,7 @@ class DPTService:
         relationships = [
             item
             for item in graph["relationships"]
-            if item["source_node_id"] in selected
-            or item["target_node_id"] in selected
+            if item["source_node_id"] in selected or item["target_node_id"] in selected
         ]
         involved = selected | {
             node
@@ -2838,6 +3109,58 @@ class DPTService:
             "pending_redeployments": graph["pending_redeployments"],
             "nodes": [item for item in nodes if item["node_id"] in involved],
             "relationships": relationships,
+        }
+
+    def relationship_graph_registry(
+        self,
+        project_id: str,
+        *,
+        search: str | None = None,
+        repository_alias: str | None = None,
+        procedure_id: str | None = None,
+        implementation_state: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        """Return a bounded, filterable symbol registry for maintenance UIs."""
+        graph = self.relationship_graph(project_id)
+        query = (search or "").casefold().strip()
+        nodes = [
+            item
+            for item in graph["nodes"]
+            if (not repository_alias or item["repository_alias"] == repository_alias)
+            and (not procedure_id or item.get("procedure_id") == procedure_id)
+            and (
+                not implementation_state
+                or item.get("implementation_state") == implementation_state
+            )
+            and (
+                not query
+                or query in str(item["node_id"]).casefold()
+                or query in str(item["label"]).casefold()
+                or query in str(item.get("symbol") or "").casefold()
+                or query in str(item["path"]).casefold()
+            )
+        ]
+        degree: dict[str, int] = {}
+        for relationship in graph["relationships"]:
+            for node_id in (
+                relationship["source_node_id"],
+                relationship["target_node_id"],
+            ):
+                degree[node_id] = degree.get(node_id, 0) + 1
+        total = len(nodes)
+        start = (max(page, 1) - 1) * min(max(page_size, 1), 200)
+        bounded = nodes[start : start + min(max(page_size, 1), 200)]
+        return {
+            "graph_revision": graph["graph_revision"],
+            "total": total,
+            "page": max(page, 1),
+            "page_size": min(max(page_size, 1), 200),
+            "nodes": [
+                {**item, "relationship_count": degree.get(item["node_id"], 0)}
+                for item in bounded
+            ],
         }
 
     def validate_merged_pull_request_review(
@@ -2887,24 +3210,34 @@ class DPTService:
         return _row_dict(row)
 
     def verify_relationship_graph(self, project_id: str) -> dict[str, Any]:
-        """Resolve every graph node at its pinned immutable repository revision."""
+        """Resolve symbols and prove each declared edge at pinned revisions."""
         graph = self.relationship_graph(project_id)
-        repositories = {
-            item["alias"]: item for item in self.repositories(project_id)
-        }
+        repositories = {item["alias"]: item for item in self.repositories(project_id)}
         snapshots = {
             item["repository_alias"]: item["commit_sha"]
             for item in graph["repository_snapshots"]
         }
         node_results: list[dict[str, Any]] = []
         state_by_node: dict[str, str] = {}
+        content_by_node: dict[str, str] = {}
+        node_by_id = {str(item["node_id"]): item for item in graph["nodes"]}
+        verified_at = utc_now()
         for node in graph["nodes"]:
             repository = repositories.get(str(node["repository_alias"]))
             revision = snapshots.get(str(node["repository_alias"]))
             local_path = repository.get("local_path") if repository else None
             state = "verified"
             detail = "Symbol resolved at the pinned repository revision."
-            if repository is None:
+            line_start: int | None = None
+            line_end: int | None = None
+            node_evidence: dict[str, Any] = {}
+            if node.get("implementation_state") == "expected":
+                state = "expected"
+                detail = (
+                    "This is an explicitly planned counterpart, not an "
+                    "implemented symbol."
+                )
+            elif repository is None:
                 state = "invalid"
                 detail = "The graph references an unknown repository."
             elif not revision:
@@ -2924,11 +3257,22 @@ class DPTService:
                     state = "missing"
                     detail = str(error)
                 else:
-                    if not _graph_symbol_present(
+                    location = _graph_symbol_location(
                         str(node["kind"]), node.get("symbol"), content
-                    ):
+                    )
+                    if location is None:
                         state = "missing"
                         detail = "The declared symbol was not found in the file."
+                    else:
+                        line_start, line_end = location
+                        content_by_node[str(node["node_id"])] = content
+                        node_evidence = {
+                            "resolver": (
+                                "python_ast"
+                                if str(node["path"]).endswith(".py")
+                                else "source_declaration"
+                            )
+                        }
             state_by_node[str(node["node_id"])] = state
             node_results.append(
                 {
@@ -2939,6 +3283,9 @@ class DPTService:
                     "revision": revision,
                     "state": state,
                     "detail": detail,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "evidence": node_evidence,
                 }
             )
 
@@ -2950,8 +3297,11 @@ class DPTService:
             target_state = state_by_node.get(
                 str(relationship["target_node_id"]), "invalid"
             )
-            declared_state = str(relationship["verification"]["state"])
-            if source_state in {"missing", "invalid"} or target_state in {
+            edge_evidence: dict[str, Any] = {}
+            if source_state == "expected" or target_state == "expected":
+                state = "expected"
+                detail = "The relationship includes a planned counterpart."
+            elif source_state in {"missing", "invalid"} or target_state in {
                 "missing",
                 "invalid",
             }:
@@ -2964,14 +3314,71 @@ class DPTService:
                 state = "unverified"
                 detail = "Attach and pin both repositories to verify this edge."
             else:
-                state = declared_state
-                detail = str(relationship["verification"].get("details") or "")
+                source = node_by_id[str(relationship["source_node_id"])]
+                target = node_by_id[str(relationship["target_node_id"])]
+                state, detail, edge_evidence = _verify_graph_relationship_evidence(
+                    str(relationship["verification"]["method"]),
+                    str(relationship.get("directness") or "direct"),
+                    source,
+                    target,
+                    content_by_node.get(str(relationship["source_node_id"]), ""),
+                )
             relationship_results.append(
                 {
                     "relationship_id": relationship["relationship_id"],
                     "state": state,
                     "detail": detail,
+                    "evidence": edge_evidence,
                 }
+            )
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM cross_repository_graph_verification_observations
+                WHERE project_id = ? AND graph_revision = ?
+                """,
+                (project_id, graph["graph_revision"]),
+            )
+            connection.executemany(
+                """
+                INSERT INTO cross_repository_graph_verification_observations(
+                    project_id, graph_revision, subject_kind, subject_id, state,
+                    detail, verified_at, verifier_version,
+                    repository_commit_sha, line_start, line_end, evidence_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        project_id,
+                        graph["graph_revision"],
+                        "node",
+                        item["node_id"],
+                        item["state"],
+                        item["detail"],
+                        verified_at,
+                        item["revision"],
+                        item["line_start"],
+                        item["line_end"],
+                        json.dumps(item["evidence"], sort_keys=True),
+                    )
+                    for item in node_results
+                ]
+                + [
+                    (
+                        project_id,
+                        graph["graph_revision"],
+                        "relationship",
+                        item["relationship_id"],
+                        item["state"],
+                        item["detail"],
+                        verified_at,
+                        None,
+                        None,
+                        None,
+                        json.dumps(item["evidence"], sort_keys=True),
+                    )
+                    for item in relationship_results
+                ],
             )
         failures = [
             item
@@ -2994,6 +3401,7 @@ class DPTService:
             "nodes": node_results,
             "relationships": relationship_results,
             "failures": failures,
+            "verified_at": verified_at,
         }
 
     def portable_plan(
@@ -3634,6 +4042,13 @@ class DPTService:
                 (project_id,),
             )
         connection.execute(
+            """
+            DELETE FROM cross_repository_graph_verification_observations
+            WHERE project_id = ? AND graph_revision = ?
+            """,
+            (project_id, plan.cross_repository_graph.revision),
+        )
+        connection.execute(
             "DELETE FROM cross_repository_graph_relationships WHERE project_id = ?",
             (project_id,),
         )
@@ -3898,8 +4313,8 @@ class DPTService:
             """
             INSERT INTO cross_repository_graph_nodes(
                 project_id, node_id, repository_id, kind, label, path, symbol,
-                parent_node_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                parent_node_id, procedure_id, implementation_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -3911,6 +4326,8 @@ class DPTService:
                     item.path,
                     item.symbol,
                     item.parent_node_id,
+                    item.procedure_id,
+                    item.implementation_state,
                 )
                 for item in graph.nodes
             ],
@@ -3920,8 +4337,9 @@ class DPTService:
             INSERT INTO cross_repository_graph_relationships(
                 project_id, relationship_id, source_node_id, target_node_id,
                 relationship_type, introduced_by_change_set_id,
-                verification_state, verification_method, verification_details
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                verification_state, verification_method, verification_details,
+                directness
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -3931,9 +4349,10 @@ class DPTService:
                     item.target_node_id,
                     item.relationship_type,
                     item.introduced_by_change_set_id,
-                    item.verification.state,
+                    "declared",
                     item.verification.method,
                     item.verification.details,
+                    item.directness,
                 )
                 for item in graph.relationships
             ],
@@ -3942,9 +4361,7 @@ class DPTService:
             graph.revision
             if update_published_baseline
             else (
-                int(graph_metadata["published_graph_revision"])
-                if graph_metadata
-                else 0
+                int(graph_metadata["published_graph_revision"]) if graph_metadata else 0
             )
         )
         connection.execute(
@@ -4370,7 +4787,7 @@ class DPTService:
             nodes_by_id = {item.node_id: item for item in graph.nodes}
             lines.extend(
                 [
-                    "| Source | Relationship | Target | Verification |",
+                    "| Source | Relationship | Target | Evidence policy |",
                     "| --- | --- | --- | --- |",
                 ]
             )
@@ -4381,7 +4798,8 @@ class DPTService:
                     f"| `{source.repository_alias}:{source.label}` | "
                     f"`{relationship.relationship_type}` | "
                     f"`{target.repository_alias}:{target.label}` | "
-                    f"`{relationship.verification.state}` |"
+                    f"`{relationship.directness} / "
+                    f"{relationship.verification.method}` |"
                 )
         else:
             lines.append("_No cross-repository relationships are registered yet._")

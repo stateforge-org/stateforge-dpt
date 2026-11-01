@@ -352,6 +352,8 @@ CREATE TABLE IF NOT EXISTS cross_repository_graph_nodes (
     path TEXT NOT NULL,
     symbol TEXT,
     parent_node_id TEXT,
+    procedure_id TEXT,
+    implementation_state TEXT NOT NULL DEFAULT 'implemented',
     PRIMARY KEY(project_id, node_id)
 );
 
@@ -361,6 +363,7 @@ CREATE TABLE IF NOT EXISTS cross_repository_graph_relationships (
     source_node_id TEXT NOT NULL,
     target_node_id TEXT NOT NULL,
     relationship_type TEXT NOT NULL,
+    directness TEXT NOT NULL DEFAULT 'direct',
     introduced_by_change_set_id TEXT,
     verification_state TEXT NOT NULL,
     verification_method TEXT NOT NULL,
@@ -375,6 +378,22 @@ CREATE TABLE IF NOT EXISTS cross_repository_graph_relationships (
     FOREIGN KEY(project_id, introduced_by_change_set_id)
         REFERENCES cross_repository_graph_change_sets(project_id, change_set_id)
         ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS cross_repository_graph_verification_observations (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    graph_revision INTEGER NOT NULL,
+    subject_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    verified_at TEXT NOT NULL,
+    verifier_version INTEGER NOT NULL DEFAULT 1,
+    repository_commit_sha TEXT,
+    line_start INTEGER,
+    line_end INTEGER,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY(project_id, graph_revision, subject_kind, subject_id)
 );
 
 CREATE TABLE IF NOT EXISTS repository_security_sboms (
@@ -655,6 +674,34 @@ class Database:
                 connection.execute(
                     "ALTER TABLE cross_repository_graph_metadata "
                     "ADD COLUMN tracking_started_at TEXT"
+                )
+            graph_node_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(cross_repository_graph_nodes)"
+                ).fetchall()
+            }
+            if "procedure_id" not in graph_node_columns:
+                connection.execute(
+                    "ALTER TABLE cross_repository_graph_nodes "
+                    "ADD COLUMN procedure_id TEXT"
+                )
+            if "implementation_state" not in graph_node_columns:
+                connection.execute(
+                    "ALTER TABLE cross_repository_graph_nodes "
+                    "ADD COLUMN implementation_state TEXT NOT NULL "
+                    "DEFAULT 'implemented'"
+                )
+            graph_relationship_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(cross_repository_graph_relationships)"
+                ).fetchall()
+            }
+            if "directness" not in graph_relationship_columns:
+                connection.execute(
+                    "ALTER TABLE cross_repository_graph_relationships "
+                    "ADD COLUMN directness TEXT NOT NULL DEFAULT 'direct'"
                 )
             remote_snapshot_columns = {
                 row["name"]

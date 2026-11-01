@@ -201,7 +201,8 @@ function useRoute() {
     window.addEventListener("hashchange", update);
     return () => window.removeEventListener("hashchange", update);
   }, []);
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  const routePath = hash.replace(/^#\/?/, "").split("?", 1)[0];
+  const parts = routePath.split("/").filter(Boolean);
   return {
     raw: hash,
     root: parts[0] || "projects",

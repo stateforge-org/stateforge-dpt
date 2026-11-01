@@ -154,6 +154,7 @@ VerificationKind = Literal[
 ]
 
 GraphNodeKind = Literal[
+    "procedure",
     "protobuf_package",
     "service",
     "rpc",
@@ -165,6 +166,8 @@ GraphNodeKind = Literal[
     "storage_implementation",
     "test",
 ]
+GraphImplementationState = Literal["implemented", "expected"]
+GraphRelationshipDirectness = Literal["direct", "transitive", "conceptual"]
 GraphRelationshipType = Literal[
     "implements",
     "consumes",
@@ -174,13 +177,6 @@ GraphRelationshipType = Literal[
     "translates",
     "exposes",
     "tests",
-]
-GraphVerificationState = Literal[
-    "declared",
-    "verified",
-    "missing",
-    "stale",
-    "invalid",
 ]
 GraphVerificationMethod = Literal[
     "protobuf_descriptor",
@@ -376,21 +372,20 @@ class PortableGraphChangeSet(BaseModel):
 class PortableGraphNode(BaseModel):
     """One repository-owned contract or implementation symbol."""
 
-    node_id: str = Field(
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/@-]*$", max_length=300
-    )
+    node_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/@-]*$", max_length=300)
     repository_alias: str
     kind: GraphNodeKind
     label: str = Field(min_length=1, max_length=300)
     path: str = Field(min_length=1, max_length=1000)
     symbol: str | None = Field(default=None, max_length=1000)
     parent_node_id: str | None = Field(default=None, max_length=300)
+    procedure_id: str | None = Field(default=None, max_length=200)
+    implementation_state: GraphImplementationState = "implemented"
 
 
 class PortableGraphVerification(BaseModel):
-    """Current evidence supporting one declared relationship."""
+    """Portable policy for obtaining evidence, never an observed result."""
 
-    state: GraphVerificationState = "declared"
     method: GraphVerificationMethod = "manual"
     details: str = Field(default="", max_length=4000)
 
@@ -404,6 +399,7 @@ class PortableGraphRelationship(BaseModel):
     source_node_id: str
     target_node_id: str
     relationship_type: GraphRelationshipType
+    directness: GraphRelationshipDirectness = "direct"
     introduced_by_change_set_id: str | None = None
     verification: PortableGraphVerification = Field(
         default_factory=PortableGraphVerification
