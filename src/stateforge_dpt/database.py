@@ -184,6 +184,9 @@ CREATE TABLE IF NOT EXISTS github_artifacts (
     labels TEXT NOT NULL DEFAULT '[]',
     head_branch TEXT,
     base_branch TEXT,
+    head_commit_sha TEXT,
+    merge_commit_sha TEXT,
+    merged_at TEXT,
     is_draft INTEGER NOT NULL DEFAULT 0,
     is_merged INTEGER NOT NULL DEFAULT 0,
     checks_state TEXT,
@@ -305,6 +308,75 @@ CREATE TABLE IF NOT EXISTS plan_change_proposal_operations (
     PRIMARY KEY(proposal_id, operation_id)
 );
 
+CREATE TABLE IF NOT EXISTS cross_repository_graph_metadata (
+    project_id TEXT PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+    graph_revision INTEGER NOT NULL DEFAULT 0,
+    published_graph_revision INTEGER NOT NULL DEFAULT 0,
+    tracking_started_at TEXT,
+    deployed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cross_repository_graph_snapshots (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    commit_sha TEXT NOT NULL,
+    PRIMARY KEY(project_id, repository_id)
+);
+
+CREATE TABLE IF NOT EXISTS cross_repository_graph_change_sets (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    change_set_id TEXT NOT NULL,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    pull_request_number INTEGER NOT NULL,
+    milestone_step_id TEXT NOT NULL,
+    merge_commit_sha TEXT NOT NULL,
+    disposition TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    reviewed_at TEXT NOT NULL,
+    reviewed_by TEXT NOT NULL,
+    PRIMARY KEY(project_id, change_set_id),
+    UNIQUE(project_id, repository_id, pull_request_number),
+    FOREIGN KEY(project_id, milestone_step_id)
+        REFERENCES steps(project_id, step_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS cross_repository_graph_nodes (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
+        ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    path TEXT NOT NULL,
+    symbol TEXT,
+    parent_node_id TEXT,
+    PRIMARY KEY(project_id, node_id)
+);
+
+CREATE TABLE IF NOT EXISTS cross_repository_graph_relationships (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    relationship_id TEXT NOT NULL,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    introduced_by_change_set_id TEXT,
+    verification_state TEXT NOT NULL,
+    verification_method TEXT NOT NULL,
+    verification_details TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(project_id, relationship_id),
+    FOREIGN KEY(project_id, source_node_id)
+        REFERENCES cross_repository_graph_nodes(project_id, node_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(project_id, target_node_id)
+        REFERENCES cross_repository_graph_nodes(project_id, node_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(project_id, introduced_by_change_set_id)
+        REFERENCES cross_repository_graph_change_sets(project_id, change_set_id)
+        ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS repository_security_sboms (
     sbom_id INTEGER PRIMARY KEY AUTOINCREMENT,
     repository_id TEXT NOT NULL REFERENCES repositories(repository_id)
@@ -406,6 +478,16 @@ CREATE INDEX IF NOT EXISTS idx_context_approvals_step
     ON context_approvals(project_id, step_id, approved_at DESC);
 CREATE INDEX IF NOT EXISTS idx_plan_change_proposals_project
     ON plan_change_proposals(project_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_graph_nodes_repository
+    ON cross_repository_graph_nodes(repository_id, path, symbol);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_graph_relationship_source
+    ON cross_repository_graph_relationships(project_id, source_node_id);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_graph_relationship_target
+    ON cross_repository_graph_relationships(project_id, target_node_id);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_graph_relationship_type
+    ON cross_repository_graph_relationships(project_id, relationship_type);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_graph_change_sets_pr
+    ON cross_repository_graph_change_sets(repository_id, pull_request_number);
 CREATE INDEX IF NOT EXISTS idx_security_sboms_repository
     ON repository_security_sboms(repository_id, validated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_vulnerability_assessments_repository
@@ -550,6 +632,29 @@ class Database:
                 connection.execute(
                     "ALTER TABLE github_artifacts "
                     "ADD COLUMN changed_files TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "head_commit_sha" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE github_artifacts ADD COLUMN head_commit_sha TEXT"
+                )
+            if "merge_commit_sha" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE github_artifacts ADD COLUMN merge_commit_sha TEXT"
+                )
+            if "merged_at" not in artifact_columns:
+                connection.execute(
+                    "ALTER TABLE github_artifacts ADD COLUMN merged_at TEXT"
+                )
+            graph_metadata_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(cross_repository_graph_metadata)"
+                ).fetchall()
+            }
+            if "tracking_started_at" not in graph_metadata_columns:
+                connection.execute(
+                    "ALTER TABLE cross_repository_graph_metadata "
+                    "ADD COLUMN tracking_started_at TEXT"
                 )
             remote_snapshot_columns = {
                 row["name"]

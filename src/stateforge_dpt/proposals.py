@@ -14,7 +14,13 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from stateforge_dpt.database import Database
 from stateforge_dpt.models import (
+    GraphChangeDisposition,
     PortableContextResource,
+    PortableCrossRepositoryGraph,
+    PortableGraphChangeSet,
+    PortableGraphNode,
+    PortableGraphRelationship,
+    PortableGraphRepositorySnapshot,
     PortablePlan,
     PortableRepository,
     PortableStep,
@@ -128,6 +134,69 @@ class ReorderStepsOperation(BaseModel):
     step_ids: list[str] = Field(min_length=1, max_length=5000)
 
 
+class UpsertGraphNodeOperation(BaseModel):
+    """Create or replace one cross-repository graph node."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["upsert_graph_node"]
+    node: PortableGraphNode
+
+
+class RemoveGraphNodeOperation(BaseModel):
+    """Remove one graph node after its relationships are removed."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["remove_graph_node"]
+    node_id: str
+
+
+class UpsertGraphRelationshipOperation(BaseModel):
+    """Create or replace one typed cross-repository relationship."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["upsert_graph_relationship"]
+    relationship: PortableGraphRelationship
+
+
+class RemoveGraphRelationshipOperation(BaseModel):
+    """Remove one cross-repository relationship."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["remove_graph_relationship"]
+    relationship_id: str
+
+
+class SetGraphRepositorySnapshotOperation(BaseModel):
+    """Pin the repository revision used by graph verification."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["set_graph_repository_snapshot"]
+    snapshot: PortableGraphRepositorySnapshot
+
+
+class InitializeGraphTrackingOperation(BaseModel):
+    """Set the historical cutoff for the first graph deployment."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["initialize_graph_tracking"]
+    tracking_started_at: str = Field(min_length=1, max_length=100)
+
+
+class ReviewMergedPullRequestOperation(BaseModel):
+    """Record the required post-merge cross-repository impact decision."""
+
+    operation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    kind: Literal["review_merged_pull_request"]
+    repository_alias: str
+    pull_request_number: int = Field(ge=1)
+    milestone_step_id: str
+    merge_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    disposition: GraphChangeDisposition
+    reason: str = Field(default="", max_length=4000)
+    reviewed_at: str = Field(min_length=1, max_length=100)
+    reviewed_by: str = Field(min_length=1, max_length=200)
+
+
 PlanOperation = Annotated[
     CreateStepOperation
     | UpdateStepOperation
@@ -137,7 +206,14 @@ PlanOperation = Annotated[
     | RenameRepositoryOperation
     | RemoveRepositoryOperation
     | UpdateProjectOperation
-    | ReorderStepsOperation,
+    | ReorderStepsOperation
+    | UpsertGraphNodeOperation
+    | RemoveGraphNodeOperation
+    | UpsertGraphRelationshipOperation
+    | RemoveGraphRelationshipOperation
+    | SetGraphRepositorySnapshotOperation
+    | InitializeGraphTrackingOperation
+    | ReviewMergedPullRequestOperation,
     Field(discriminator="kind"),
 ]
 PLAN_OPERATION_ADAPTER = TypeAdapter(list[PlanOperation])
@@ -202,6 +278,13 @@ def apply_plan_operations(
     project = plan.project
     repositories = list(plan.repositories)
     steps = list(plan.steps)
+    graph = plan.cross_repository_graph
+    graph_tracking_started_at = graph.tracking_started_at
+    graph_snapshots = list(graph.repository_snapshots)
+    graph_change_sets = list(graph.change_sets)
+    graph_nodes = list(graph.nodes)
+    graph_relationships = list(graph.relationships)
+    graph_touched = False
 
     for operation in operations:
         if isinstance(operation, CreateStepOperation):
@@ -315,18 +398,108 @@ def apply_plan_operations(
                 ordered[step_id].model_copy(update={"sort_order": index})
                 for index, step_id in enumerate(operation.step_ids)
             ]
+        elif isinstance(operation, UpsertGraphNodeOperation):
+            graph_touched = True
+            graph_nodes = [
+                node
+                for node in graph_nodes
+                if node.node_id != operation.node.node_id
+            ]
+            graph_nodes.append(operation.node)
+        elif isinstance(operation, RemoveGraphNodeOperation):
+            graph_touched = True
+            if not any(node.node_id == operation.node_id for node in graph_nodes):
+                raise DPTError(f"Graph node not found: {operation.node_id}")
+            graph_nodes = [
+                node for node in graph_nodes if node.node_id != operation.node_id
+            ]
+        elif isinstance(operation, UpsertGraphRelationshipOperation):
+            graph_touched = True
+            graph_relationships = [
+                relationship
+                for relationship in graph_relationships
+                if relationship.relationship_id
+                != operation.relationship.relationship_id
+            ]
+            graph_relationships.append(operation.relationship)
+        elif isinstance(operation, RemoveGraphRelationshipOperation):
+            graph_touched = True
+            if not any(
+                relationship.relationship_id == operation.relationship_id
+                for relationship in graph_relationships
+            ):
+                raise DPTError(
+                    f"Graph relationship not found: {operation.relationship_id}"
+                )
+            graph_relationships = [
+                relationship
+                for relationship in graph_relationships
+                if relationship.relationship_id != operation.relationship_id
+            ]
+        elif isinstance(operation, SetGraphRepositorySnapshotOperation):
+            graph_touched = True
+            graph_snapshots = [
+                snapshot
+                for snapshot in graph_snapshots
+                if snapshot.repository_alias
+                != operation.snapshot.repository_alias
+            ]
+            graph_snapshots.append(operation.snapshot)
+        elif isinstance(operation, InitializeGraphTrackingOperation):
+            graph_touched = True
+            if graph_tracking_started_at is not None:
+                raise DPTError("Relationship graph tracking is already initialized")
+            graph_tracking_started_at = operation.tracking_started_at
+        elif isinstance(operation, ReviewMergedPullRequestOperation):
+            graph_touched = True
+            change_set_id = (
+                f"{operation.repository_alias}#{operation.pull_request_number}"
+            )
+            if any(
+                change_set.change_set_id == change_set_id
+                for change_set in graph_change_sets
+            ):
+                raise DPTError(f"Merged PR already reviewed: {change_set_id}")
+            graph_change_sets.append(
+                PortableGraphChangeSet(
+                    change_set_id=change_set_id,
+                    repository_alias=operation.repository_alias,
+                    pull_request_number=operation.pull_request_number,
+                    milestone_step_id=operation.milestone_step_id,
+                    merge_commit_sha=operation.merge_commit_sha,
+                    disposition=operation.disposition,
+                    reason=operation.reason,
+                    reviewed_at=operation.reviewed_at,
+                    reviewed_by=operation.reviewed_by,
+                )
+            )
 
     # A proposal must not silently rewrite unrelated milestones. Sparse ordering is
     # intentional: it lets a new milestone occupy an unused position without
     # invalidating approvals and implementation packages for every existing step.
     # Only an explicit ReorderStepsOperation may assign new sort_order values.
     ordered_steps = sorted(steps, key=lambda item: (item.sort_order, item.step_id))
+    updated_graph = PortableCrossRepositoryGraph(
+        revision=graph.revision + int(graph_touched),
+        tracking_started_at=graph_tracking_started_at,
+        repository_snapshots=sorted(
+            graph_snapshots, key=lambda item: item.repository_alias
+        ),
+        change_sets=sorted(
+            graph_change_sets, key=lambda item: (item.reviewed_at, item.change_set_id)
+        ),
+        nodes=sorted(graph_nodes, key=lambda item: item.node_id),
+        relationships=sorted(
+            graph_relationships, key=lambda item: item.relationship_id
+        ),
+    )
     return PortablePlan.model_validate(
         {
             "schema_version": plan.schema_version,
             "project": project.model_dump(mode="json"),
             "repositories": [item.model_dump(mode="json") for item in repositories],
             "steps": [item.model_dump(mode="json") for item in ordered_steps],
+            "cross_repository_graph": updated_graph.model_dump(mode="json"),
         }
     )
 
@@ -374,6 +547,52 @@ def semantic_plan_diff(before: PortablePlan, after: PortablePlan) -> dict[str, A
         | set(removed_steps)
         | {item["step_id"] for item in changed_steps}
     )
+
+    before_graph = before.cross_repository_graph
+    after_graph = after.cross_repository_graph
+    before_nodes = {item.node_id: item for item in before_graph.nodes}
+    after_nodes = {item.node_id: item for item in after_graph.nodes}
+    before_relationships = {
+        item.relationship_id: item for item in before_graph.relationships
+    }
+    after_relationships = {
+        item.relationship_id: item for item in after_graph.relationships
+    }
+    before_change_sets = {
+        item.change_set_id: item for item in before_graph.change_sets
+    }
+    after_change_sets = {item.change_set_id: item for item in after_graph.change_sets}
+    added_nodes = sorted(after_nodes.keys() - before_nodes.keys())
+    removed_nodes = sorted(before_nodes.keys() - after_nodes.keys())
+    changed_nodes = sorted(
+        node_id
+        for node_id in before_nodes.keys() & after_nodes.keys()
+        if before_nodes[node_id].model_dump(mode="json")
+        != after_nodes[node_id].model_dump(mode="json")
+    )
+    added_relationships = sorted(
+        after_relationships.keys() - before_relationships.keys()
+    )
+    removed_relationships = sorted(
+        before_relationships.keys() - after_relationships.keys()
+    )
+    changed_relationships = sorted(
+        relationship_id
+        for relationship_id in before_relationships.keys()
+        & after_relationships.keys()
+        if before_relationships[relationship_id].model_dump(mode="json")
+        != after_relationships[relationship_id].model_dump(mode="json")
+    )
+    reviewed_pull_requests = sorted(
+        after_change_sets.keys() - before_change_sets.keys()
+    )
+    affected_steps = sorted(
+        set(affected_steps)
+        | {
+            after_change_sets[change_set_id].milestone_step_id
+            for change_set_id in reviewed_pull_requests
+        }
+    )
     summaries: list[str] = []
     if project_changes:
         summaries.append(f"Update {len(project_changes)} project field(s)")
@@ -393,6 +612,27 @@ def semantic_plan_diff(before: PortablePlan, after: PortablePlan) -> dict[str, A
         summaries.append(f"Update {len(changed_steps)} milestone(s)")
     if removed_steps:
         summaries.append(f"Delete {len(removed_steps)} milestone(s)")
+    if added_nodes or changed_nodes or removed_nodes:
+        summaries.append(
+            "Update "
+            f"{len(added_nodes) + len(changed_nodes) + len(removed_nodes)} "
+            "cross-repository graph node(s)"
+        )
+    if added_relationships or changed_relationships or removed_relationships:
+        changed_relationship_count = (
+            len(added_relationships)
+            + len(changed_relationships)
+            + len(removed_relationships)
+        )
+        summaries.append(
+            "Update "
+            f"{changed_relationship_count} "
+            "cross-repository relationship(s)"
+        )
+    if reviewed_pull_requests:
+        summaries.append(
+            f"Reconcile {len(reviewed_pull_requests)} merged pull request(s)"
+        )
     return {
         "summary": summaries or ["No semantic plan change"],
         "project": project_changes,
@@ -405,6 +645,25 @@ def semantic_plan_diff(before: PortablePlan, after: PortablePlan) -> dict[str, A
             "added": added_steps,
             "removed": removed_steps,
             "changed": changed_steps,
+        },
+        "cross_repository_graph": {
+            "revision_before": before_graph.revision,
+            "revision_after": after_graph.revision,
+            "tracking_started_at": {
+                "before": before_graph.tracking_started_at,
+                "after": after_graph.tracking_started_at,
+            },
+            "nodes": {
+                "added": added_nodes,
+                "removed": removed_nodes,
+                "changed": changed_nodes,
+            },
+            "relationships": {
+                "added": added_relationships,
+                "removed": removed_relationships,
+                "changed": changed_relationships,
+            },
+            "reviewed_pull_requests": reviewed_pull_requests,
         },
         "affected_step_ids": affected_steps,
     }
@@ -438,6 +697,7 @@ class PlanProposalService:
         before = self.service.portable_plan(request.project_id)
         base_fingerprint = plan_fingerprint(before)
         self._validate_deletions(request.project_id, request.operations)
+        self._validate_graph_reviews(request.project_id, request.operations)
         after = apply_plan_operations(before, request.operations)
         if canonical_plan_json(before) == canonical_plan_json(after):
             raise DPTError("Proposal does not change the plan")
@@ -716,6 +976,7 @@ class PlanProposalService:
 
             current_plan = self.service.portable_plan(str(proposal["project_id"]))
             operations = PLAN_OPERATION_ADAPTER.validate_python(proposal["operations"])
+            self._validate_graph_reviews(str(proposal["project_id"]), operations)
             rebuilt = apply_plan_operations(current_plan, operations)
             rebuilt_fingerprint = plan_fingerprint(rebuilt)
             if rebuilt_fingerprint != proposal["draft_plan_fingerprint"]:
@@ -853,6 +1114,94 @@ class PlanProposalService:
                         f"Repository {operation.repository.alias} has GitHub delivery "
                         "evidence; its GitHub identity cannot be replaced"
                     )
+
+    def _validate_graph_reviews(
+        self, project_id: str, operations: builtins.list[PlanOperation]
+    ) -> None:
+        """Bind every graph review to exact reconciled merged-PR evidence."""
+        graph_operation_types = (
+            UpsertGraphNodeOperation,
+            RemoveGraphNodeOperation,
+            UpsertGraphRelationshipOperation,
+            RemoveGraphRelationshipOperation,
+            SetGraphRepositorySnapshotOperation,
+            InitializeGraphTrackingOperation,
+            ReviewMergedPullRequestOperation,
+        )
+        graph_operations = [
+            operation
+            for operation in operations
+            if isinstance(operation, graph_operation_types)
+        ]
+        if not graph_operations:
+            return
+        graph = self.service.portable_plan(project_id).cross_repository_graph
+        is_initial_baseline = (
+            graph.revision == 0 and not graph.nodes and not graph.relationships
+        )
+        has_review = any(
+            isinstance(operation, ReviewMergedPullRequestOperation)
+            for operation in graph_operations
+        )
+        if not is_initial_baseline and not has_review:
+            raise DPTError(
+                "A relationship graph proposal must review a merged pull request"
+            )
+        if is_initial_baseline and not any(
+            isinstance(operation, SetGraphRepositorySnapshotOperation)
+            for operation in graph_operations
+        ):
+            raise DPTError(
+                "The initial relationship graph baseline requires repository "
+                "snapshots"
+            )
+        if is_initial_baseline and not any(
+            isinstance(operation, InitializeGraphTrackingOperation)
+            for operation in graph_operations
+        ):
+            raise DPTError(
+                "The initial relationship graph baseline must initialize merge "
+                "tracking"
+            )
+        reviews = [
+            operation
+            for operation in graph_operations
+            if isinstance(operation, ReviewMergedPullRequestOperation)
+        ]
+        structural_changes = any(
+            isinstance(
+                operation,
+                (
+                    UpsertGraphNodeOperation,
+                    RemoveGraphNodeOperation,
+                    UpsertGraphRelationshipOperation,
+                    RemoveGraphRelationshipOperation,
+                ),
+            )
+            for operation in graph_operations
+        )
+        if any(
+            review.disposition == "graph_updated" for review in reviews
+        ) and not structural_changes:
+            raise DPTError(
+                "A graph-updated PR review must add, update, or remove graph records"
+            )
+        if reviews and all(
+            review.disposition == "no_cross_repository_impact" for review in reviews
+        ) and structural_changes:
+            raise DPTError(
+                "A no-impact PR review cannot change graph nodes or relationships"
+            )
+        for operation in operations:
+            if not isinstance(operation, ReviewMergedPullRequestOperation):
+                continue
+            self.service.validate_merged_pull_request_review(
+                project_id,
+                repository_alias=operation.repository_alias,
+                pull_request_number=operation.pull_request_number,
+                milestone_step_id=operation.milestone_step_id,
+                merge_commit_sha=operation.merge_commit_sha,
+            )
 
     @staticmethod
     def _assert_exact_decision(

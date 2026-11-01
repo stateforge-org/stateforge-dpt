@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ from stateforge_dpt.git import (
     clone_repository,
     inspect_clone,
     is_committed_file,
+    read_file_at_revision,
     read_remote_file,
     repository_head,
     tracked_files,
@@ -33,6 +35,11 @@ from stateforge_dpt.git import (
 from stateforge_dpt.models import (
     ContextContractUpdate,
     PortableContextResource,
+    PortableCrossRepositoryGraph,
+    PortableGraphChangeSet,
+    PortableGraphNode,
+    PortableGraphRelationship,
+    PortableGraphRepositorySnapshot,
     PortablePlan,
     PortableProject,
     PortableRepository,
@@ -336,6 +343,55 @@ def _selector_present(kind: str, value: str | None, content: str) -> bool:
     if kind == "test_case":
         return bool(re.search(rf"\b(?:def|function)\s+{re.escape(value)}\b", content))
     return bool(re.search(rf"\b{re.escape(value)}\b", content))
+
+
+def _python_declarations(content: str) -> set[str]:
+    """Return qualified class and function paths from one Python module."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return set()
+    declarations: set[str] = set()
+
+    def visit(nodes: list[ast.stmt], parents: tuple[str, ...] = ()) -> None:
+        for node in nodes:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualified = (*parents, node.name)
+                declarations.add(".".join(qualified))
+                visit(node.body, qualified)
+
+    visit(tree.body)
+    return declarations
+
+
+def _graph_symbol_present(kind: str, symbol: str | None, content: str) -> bool:
+    """Conservatively resolve a portable graph symbol inside immutable source."""
+    if not symbol:
+        return True
+    if kind in {
+        "python_module",
+        "class",
+        "function",
+        "storage_contract",
+        "storage_implementation",
+        "test",
+    }:
+        declarations = _python_declarations(content)
+        return any(
+            symbol == item or symbol.endswith(f".{item}")
+            for item in declarations
+        )
+    name = symbol.rsplit(".", 1)[-1]
+    if kind == "protobuf_package":
+        return bool(re.search(rf"\bpackage\s+{re.escape(symbol)}\s*;", content))
+    keyword = {
+        "service": "service",
+        "rpc": "rpc",
+        "message": "message",
+    }.get(kind)
+    if keyword:
+        return bool(re.search(rf"\b{keyword}\s+{re.escape(name)}\b", content))
+    return symbol in content
 
 
 def _resource_selectors(path: str, content: str) -> list[dict[str, str]]:
@@ -2391,6 +2447,7 @@ class DPTService:
             != current_observation["repository_metrics"]
         ):
             history.append(current_observation)
+        relationship_graph = self.relationship_graph(project_id)
         return {
             "project": project,
             "repositories": repositories,
@@ -2407,6 +2464,18 @@ class DPTService:
             "repository_metrics": repository_metrics,
             "history": history,
             "findings": findings,
+            "cross_repository_graph": {
+                "deployment_status": relationship_graph["deployment_status"],
+                "graph_revision": relationship_graph["graph_revision"],
+                "published_graph_revision": relationship_graph[
+                    "published_graph_revision"
+                ],
+                "node_count": len(relationship_graph["nodes"]),
+                "relationship_count": len(relationship_graph["relationships"]),
+                "pending_redeployments": relationship_graph[
+                    "pending_redeployments"
+                ],
+            },
         }
 
     @staticmethod
@@ -2514,6 +2583,419 @@ class DPTService:
             "recorded_at": timestamp,
         }
 
+    def portable_relationship_graph(
+        self,
+        project_id: str,
+    ) -> PortableCrossRepositoryGraph:
+        """Return the graph projection in its portable, Git-tracked shape."""
+        self.project(project_id)
+        with self.database.connect() as connection:
+            metadata = connection.execute(
+                """
+                SELECT graph_revision, tracking_started_at
+                FROM cross_repository_graph_metadata
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+            snapshots = connection.execute(
+                """
+                SELECT r.alias AS repository_alias, s.commit_sha
+                FROM cross_repository_graph_snapshots s
+                JOIN repositories r ON r.repository_id = s.repository_id
+                WHERE s.project_id = ? ORDER BY r.alias
+                """,
+                (project_id,),
+            ).fetchall()
+            change_sets = connection.execute(
+                """
+                SELECT c.*, r.alias AS repository_alias
+                FROM cross_repository_graph_change_sets c
+                JOIN repositories r ON r.repository_id = c.repository_id
+                WHERE c.project_id = ? ORDER BY c.reviewed_at, c.change_set_id
+                """,
+                (project_id,),
+            ).fetchall()
+            nodes = connection.execute(
+                """
+                SELECT n.*, r.alias AS repository_alias
+                FROM cross_repository_graph_nodes n
+                JOIN repositories r ON r.repository_id = n.repository_id
+                WHERE n.project_id = ? ORDER BY n.node_id
+                """,
+                (project_id,),
+            ).fetchall()
+            relationships = connection.execute(
+                """
+                SELECT * FROM cross_repository_graph_relationships
+                WHERE project_id = ? ORDER BY relationship_id
+                """,
+                (project_id,),
+            ).fetchall()
+        return PortableCrossRepositoryGraph(
+            revision=int(metadata["graph_revision"]) if metadata else 0,
+            tracking_started_at=(
+                str(metadata["tracking_started_at"])
+                if metadata and metadata["tracking_started_at"]
+                else None
+            ),
+            repository_snapshots=[
+                PortableGraphRepositorySnapshot(
+                    repository_alias=str(row["repository_alias"]),
+                    commit_sha=str(row["commit_sha"]),
+                )
+                for row in snapshots
+            ],
+            change_sets=[
+                PortableGraphChangeSet.model_validate(
+                    {
+                        "change_set_id": row["change_set_id"],
+                        "repository_alias": row["repository_alias"],
+                        "pull_request_number": row["pull_request_number"],
+                        "milestone_step_id": row["milestone_step_id"],
+                        "merge_commit_sha": row["merge_commit_sha"],
+                        "disposition": row["disposition"],
+                        "reason": row["reason"],
+                        "reviewed_at": row["reviewed_at"],
+                        "reviewed_by": row["reviewed_by"],
+                    }
+                )
+                for row in change_sets
+            ],
+            nodes=[
+                PortableGraphNode.model_validate(
+                    {
+                        "node_id": row["node_id"],
+                        "repository_alias": row["repository_alias"],
+                        "kind": row["kind"],
+                        "label": row["label"],
+                        "path": row["path"],
+                        "symbol": row["symbol"],
+                        "parent_node_id": row["parent_node_id"],
+                    }
+                )
+                for row in nodes
+            ],
+            relationships=[
+                PortableGraphRelationship.model_validate(
+                    {
+                        "relationship_id": row["relationship_id"],
+                        "source_node_id": row["source_node_id"],
+                        "target_node_id": row["target_node_id"],
+                        "relationship_type": row["relationship_type"],
+                        "introduced_by_change_set_id": row[
+                            "introduced_by_change_set_id"
+                        ],
+                        "verification": {
+                            "state": row["verification_state"],
+                            "method": row["verification_method"],
+                            "details": row["verification_details"],
+                        },
+                    }
+                )
+                for row in relationships
+            ],
+        )
+
+    def relationship_graph(self, project_id: str) -> dict[str, Any]:
+        """Return the graph, deployment freshness, and merged-PR review inbox."""
+        project = self.project(project_id)
+        graph = self.portable_relationship_graph(project_id)
+        reviewed = {item.change_set_id for item in graph.change_sets}
+        with self.database.connect() as connection:
+            metadata = connection.execute(
+                """
+                SELECT * FROM cross_repository_graph_metadata WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT a.artifact_id, a.number, a.title, a.html_url, a.step_id,
+                    a.merge_commit_sha, a.head_commit_sha, a.merged_at,
+                    a.changed_files, r.alias AS repository_alias,
+                    r.github_full_name
+                FROM github_artifacts a
+                JOIN repositories r ON r.repository_id = a.repository_id
+                WHERE a.project_id = ? AND a.kind = 'pull_request'
+                    AND a.is_merged = 1 AND a.step_id IS NOT NULL
+                ORDER BY COALESCE(a.merged_at, a.updated_at), a.number
+                """,
+                (project_id,),
+            ).fetchall()
+        pending = []
+        tracking_started_at = (
+            datetime.fromisoformat(graph.tracking_started_at)
+            if graph.tracking_started_at
+            else None
+        )
+        for row in rows:
+            if tracking_started_at and row["merged_at"]:
+                try:
+                    merged_at = datetime.fromisoformat(
+                        str(row["merged_at"]).replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    merged_at = None
+                if merged_at and merged_at <= tracking_started_at:
+                    continue
+            change_set_id = f"{row['repository_alias']}#{row['number']}"
+            if change_set_id in reviewed:
+                continue
+            pending.append(
+                {
+                    "change_set_id": change_set_id,
+                    "artifact_id": row["artifact_id"],
+                    "repository_alias": row["repository_alias"],
+                    "github_full_name": row["github_full_name"],
+                    "pull_request_number": row["number"],
+                    "milestone_step_id": row["step_id"],
+                    "title": row["title"],
+                    "html_url": row["html_url"],
+                    "merge_commit_sha": row["merge_commit_sha"],
+                    "head_commit_sha": row["head_commit_sha"],
+                    "merged_at": row["merged_at"],
+                    "changed_files": json.loads(row["changed_files"] or "[]"),
+                }
+            )
+        published_revision = (
+            int(metadata["published_graph_revision"]) if metadata else 0
+        )
+        invalid = any(
+            item.verification.state == "invalid" for item in graph.relationships
+        )
+        if invalid:
+            status = "invalid"
+        elif pending:
+            status = "update_required"
+        elif graph.revision != published_revision:
+            status = "reconciling"
+        else:
+            status = "in_sync"
+        return {
+            "project_id": project_id,
+            "plan_revision": int(project["revision"]),
+            "working_plan_version": int(project["working_plan_version"]),
+            "deployment_status": status,
+            "graph_revision": graph.revision,
+            "published_graph_revision": published_revision,
+            "tracking_started_at": graph.tracking_started_at,
+            "repository_snapshots": [
+                item.model_dump(mode="json") for item in graph.repository_snapshots
+            ],
+            "change_sets": [
+                item.model_dump(mode="json") for item in graph.change_sets
+            ],
+            "nodes": [item.model_dump(mode="json") for item in graph.nodes],
+            "relationships": [
+                item.model_dump(mode="json") for item in graph.relationships
+            ],
+            "pending_redeployments": pending,
+        }
+
+    def symbol_relationships(
+        self,
+        project_id: str,
+        *,
+        repository_alias: str | None = None,
+        symbol: str | None = None,
+        node_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one bounded neighborhood for impact and counterpart queries."""
+        graph = self.relationship_graph(project_id)
+        nodes = graph["nodes"]
+        selected = {
+            item["node_id"]
+            for item in nodes
+            if (node_id is None or item["node_id"] == node_id)
+            and (
+                repository_alias is None
+                or item["repository_alias"] == repository_alias
+            )
+            and (
+                symbol is None
+                or symbol.casefold() in str(item.get("symbol") or "").casefold()
+                or symbol.casefold() in str(item.get("label") or "").casefold()
+            )
+        }
+        relationships = [
+            item
+            for item in graph["relationships"]
+            if item["source_node_id"] in selected
+            or item["target_node_id"] in selected
+        ]
+        involved = selected | {
+            node
+            for relationship in relationships
+            for node in (
+                relationship["source_node_id"],
+                relationship["target_node_id"],
+            )
+        }
+        return {
+            "deployment_status": graph["deployment_status"],
+            "graph_revision": graph["graph_revision"],
+            "pending_redeployments": graph["pending_redeployments"],
+            "nodes": [item for item in nodes if item["node_id"] in involved],
+            "relationships": relationships,
+        }
+
+    def validate_merged_pull_request_review(
+        self,
+        project_id: str,
+        *,
+        repository_alias: str,
+        pull_request_number: int,
+        milestone_step_id: str,
+        merge_commit_sha: str,
+    ) -> dict[str, Any]:
+        """Prove that a graph review names the reconciled merged milestone PR."""
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT a.*, r.alias AS repository_alias,
+                    r.github_full_name AS github_full_name
+                FROM github_artifacts a
+                JOIN repositories r ON r.repository_id = a.repository_id
+                WHERE a.project_id = ? AND r.alias = ?
+                    AND a.kind = 'pull_request' AND a.number = ?
+                """,
+                (project_id, repository_alias, pull_request_number),
+            ).fetchone()
+        if row is None:
+            raise DPTError(
+                f"Merged PR not found: {repository_alias}#{pull_request_number}. "
+                "Reconcile GitHub evidence and select the milestone PR."
+            )
+        if not bool(row["is_merged"]):
+            raise DPTError("A relationship review requires a merged pull request")
+        if row["step_id"] != milestone_step_id:
+            raise DPTError(
+                f"PR {repository_alias}#{pull_request_number} belongs to milestone "
+                f"{row['step_id'] or 'none'}, not {milestone_step_id}"
+            )
+        observed_sha = row["merge_commit_sha"]
+        if not observed_sha:
+            raise DPTError(
+                "The merged PR has no merge commit evidence. Run reconciliation "
+                "again before reviewing it."
+            )
+        if str(observed_sha) != merge_commit_sha:
+            raise DPTError(
+                "The selected merge commit does not match reconciled GitHub evidence"
+            )
+        return _row_dict(row)
+
+    def verify_relationship_graph(self, project_id: str) -> dict[str, Any]:
+        """Resolve every graph node at its pinned immutable repository revision."""
+        graph = self.relationship_graph(project_id)
+        repositories = {
+            item["alias"]: item for item in self.repositories(project_id)
+        }
+        snapshots = {
+            item["repository_alias"]: item["commit_sha"]
+            for item in graph["repository_snapshots"]
+        }
+        node_results: list[dict[str, Any]] = []
+        state_by_node: dict[str, str] = {}
+        for node in graph["nodes"]:
+            repository = repositories.get(str(node["repository_alias"]))
+            revision = snapshots.get(str(node["repository_alias"]))
+            local_path = repository.get("local_path") if repository else None
+            state = "verified"
+            detail = "Symbol resolved at the pinned repository revision."
+            if repository is None:
+                state = "invalid"
+                detail = "The graph references an unknown repository."
+            elif not revision:
+                state = "unverified"
+                detail = "No immutable repository snapshot is registered."
+            elif not local_path:
+                state = "unavailable"
+                detail = "Attach the repository clone to verify this symbol."
+            else:
+                try:
+                    content = read_file_at_revision(
+                        str(local_path),
+                        str(revision),
+                        str(node["path"]),
+                    )
+                except (GitError, subprocess.TimeoutExpired) as error:
+                    state = "missing"
+                    detail = str(error)
+                else:
+                    if not _graph_symbol_present(
+                        str(node["kind"]), node.get("symbol"), content
+                    ):
+                        state = "missing"
+                        detail = "The declared symbol was not found in the file."
+            state_by_node[str(node["node_id"])] = state
+            node_results.append(
+                {
+                    "node_id": node["node_id"],
+                    "repository_alias": node["repository_alias"],
+                    "path": node["path"],
+                    "symbol": node.get("symbol"),
+                    "revision": revision,
+                    "state": state,
+                    "detail": detail,
+                }
+            )
+
+        relationship_results = []
+        for relationship in graph["relationships"]:
+            source_state = state_by_node.get(
+                str(relationship["source_node_id"]), "invalid"
+            )
+            target_state = state_by_node.get(
+                str(relationship["target_node_id"]), "invalid"
+            )
+            declared_state = str(relationship["verification"]["state"])
+            if source_state in {"missing", "invalid"} or target_state in {
+                "missing",
+                "invalid",
+            }:
+                state = "invalid"
+                detail = "A relationship endpoint no longer resolves."
+            elif source_state in {"unavailable", "unverified"} or target_state in {
+                "unavailable",
+                "unverified",
+            }:
+                state = "unverified"
+                detail = "Attach and pin both repositories to verify this edge."
+            else:
+                state = declared_state
+                detail = str(relationship["verification"].get("details") or "")
+            relationship_results.append(
+                {
+                    "relationship_id": relationship["relationship_id"],
+                    "state": state,
+                    "detail": detail,
+                }
+            )
+        failures = [
+            item
+            for item in [*node_results, *relationship_results]
+            if item["state"] in {"missing", "invalid", "stale"}
+        ]
+        incomplete = [
+            item
+            for item in [*node_results, *relationship_results]
+            if item["state"] in {"unavailable", "unverified", "declared"}
+        ]
+        verification_status = (
+            "invalid" if failures else ("partial" if incomplete else "verified")
+        )
+        return {
+            "project_id": project_id,
+            "graph_revision": graph["graph_revision"],
+            "deployment_status": graph["deployment_status"],
+            "verification_status": verification_status,
+            "nodes": node_results,
+            "relationships": relationship_results,
+            "failures": failures,
+        }
+
     def portable_plan(
         self,
         project_id: str,
@@ -2584,6 +3066,7 @@ class DPTService:
                 )
                 for step in dashboard["steps"]
             ],
+            cross_repository_graph=self.portable_relationship_graph(project_id),
         )
 
     def import_project_from_clone(self, local_path: str) -> dict[str, Any]:
@@ -3137,11 +3620,35 @@ class DPTService:
         }
         existing_by_alias = {str(row["alias"]): row for row in existing_rows}
 
+        graph_metadata = connection.execute(
+            """
+            SELECT published_graph_revision
+            FROM cross_repository_graph_metadata WHERE project_id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+
         if not preserve_github_artifacts:
             connection.execute(
                 "DELETE FROM github_artifacts WHERE project_id = ?",
                 (project_id,),
             )
+        connection.execute(
+            "DELETE FROM cross_repository_graph_relationships WHERE project_id = ?",
+            (project_id,),
+        )
+        connection.execute(
+            "DELETE FROM cross_repository_graph_nodes WHERE project_id = ?",
+            (project_id,),
+        )
+        connection.execute(
+            "DELETE FROM cross_repository_graph_change_sets WHERE project_id = ?",
+            (project_id,),
+        )
+        connection.execute(
+            "DELETE FROM cross_repository_graph_snapshots WHERE project_id = ?",
+            (project_id,),
+        )
         connection.execute(
             "DELETE FROM step_dependencies WHERE project_id = ?",
             (project_id,),
@@ -3347,6 +3854,119 @@ class DPTService:
                     for requirement in step.verification_requirements
                 ],
             )
+        graph = plan.cross_repository_graph
+        connection.executemany(
+            """
+            INSERT INTO cross_repository_graph_snapshots(
+                project_id, repository_id, commit_sha
+            ) VALUES (?, ?, ?)
+            """,
+            [
+                (
+                    project_id,
+                    repository_ids[item.repository_alias],
+                    item.commit_sha,
+                )
+                for item in graph.repository_snapshots
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO cross_repository_graph_change_sets(
+                project_id, change_set_id, repository_id, pull_request_number,
+                milestone_step_id, merge_commit_sha, disposition, reason,
+                reviewed_at, reviewed_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    project_id,
+                    item.change_set_id,
+                    repository_ids[item.repository_alias],
+                    item.pull_request_number,
+                    item.milestone_step_id,
+                    item.merge_commit_sha,
+                    item.disposition,
+                    item.reason,
+                    item.reviewed_at,
+                    item.reviewed_by,
+                )
+                for item in graph.change_sets
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO cross_repository_graph_nodes(
+                project_id, node_id, repository_id, kind, label, path, symbol,
+                parent_node_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    project_id,
+                    item.node_id,
+                    repository_ids[item.repository_alias],
+                    item.kind,
+                    item.label,
+                    item.path,
+                    item.symbol,
+                    item.parent_node_id,
+                )
+                for item in graph.nodes
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO cross_repository_graph_relationships(
+                project_id, relationship_id, source_node_id, target_node_id,
+                relationship_type, introduced_by_change_set_id,
+                verification_state, verification_method, verification_details
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    project_id,
+                    item.relationship_id,
+                    item.source_node_id,
+                    item.target_node_id,
+                    item.relationship_type,
+                    item.introduced_by_change_set_id,
+                    item.verification.state,
+                    item.verification.method,
+                    item.verification.details,
+                )
+                for item in graph.relationships
+            ],
+        )
+        published_graph_revision = (
+            graph.revision
+            if update_published_baseline
+            else (
+                int(graph_metadata["published_graph_revision"])
+                if graph_metadata
+                else 0
+            )
+        )
+        connection.execute(
+            """
+            INSERT INTO cross_repository_graph_metadata(
+                project_id, graph_revision, published_graph_revision,
+                tracking_started_at, deployed_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(project_id) DO UPDATE SET
+                graph_revision = excluded.graph_revision,
+                published_graph_revision = excluded.published_graph_revision,
+                tracking_started_at = excluded.tracking_started_at,
+                deployed_at = excluded.deployed_at
+            """,
+            (
+                project_id,
+                graph.revision,
+                published_graph_revision,
+                graph.tracking_started_at,
+                timestamp,
+            ),
+        )
         self._assert_acyclic(connection, project_id)
         if update_published_baseline:
             connection.execute(
@@ -3560,6 +4180,9 @@ class DPTService:
             json.dumps(labels),
             (pull or {}).get("head", {}).get("ref"),
             (pull or {}).get("base", {}).get("ref"),
+            (pull or {}).get("head", {}).get("sha"),
+            (pull or {}).get("merge_commit_sha"),
+            (pull or {}).get("merged_at"),
             int(bool((pull or {}).get("draft"))),
             int(bool((pull or {}).get("merged_at"))),
             item.get("checks_state"),
@@ -3572,11 +4195,12 @@ class DPTService:
                 artifact_id, project_id, repository_id, step_id, kind,
                 number, github_issue_id, title, body, state, state_reason,
                 html_url, author_login, timeline, assignees, reviewers,
-                labels, head_branch, base_branch, is_draft, is_merged,
-                checks_state, changed_files, updated_at
+                labels, head_branch, base_branch, head_commit_sha,
+                merge_commit_sha, merged_at, is_draft, is_merged, checks_state,
+                changed_files, updated_at
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(artifact_id) DO UPDATE SET
                 repository_id = excluded.repository_id,
@@ -3596,6 +4220,9 @@ class DPTService:
                 labels = excluded.labels,
                 head_branch = excluded.head_branch,
                 base_branch = excluded.base_branch,
+                head_commit_sha = excluded.head_commit_sha,
+                merge_commit_sha = excluded.merge_commit_sha,
+                merged_at = excluded.merged_at,
                 is_draft = excluded.is_draft,
                 is_merged = excluded.is_merged,
                 checks_state = excluded.checks_state,
@@ -3725,6 +4352,39 @@ class DPTService:
             )
             for repository in dashboard["repositories"]
         )
+
+        graph = portable.cross_repository_graph
+        lines.extend(
+            [
+                "",
+                "## Cross-repository implementation graph",
+                "",
+                f"**Graph revision:** {graph.revision}  ",
+                f"**Symbols:** {len(graph.nodes)}  ",
+                f"**Relationships:** {len(graph.relationships)}  ",
+                f"**Reviewed pull requests:** {len(graph.change_sets)}",
+                "",
+            ]
+        )
+        if graph.relationships:
+            nodes_by_id = {item.node_id: item for item in graph.nodes}
+            lines.extend(
+                [
+                    "| Source | Relationship | Target | Verification |",
+                    "| --- | --- | --- | --- |",
+                ]
+            )
+            for relationship in graph.relationships:
+                source = nodes_by_id[relationship.source_node_id]
+                target = nodes_by_id[relationship.target_node_id]
+                lines.append(
+                    f"| `{source.repository_alias}:{source.label}` | "
+                    f"`{relationship.relationship_type}` | "
+                    f"`{target.repository_alias}:{target.label}` | "
+                    f"`{relationship.verification.state}` |"
+                )
+        else:
+            lines.append("_No cross-repository relationships are registered yet._")
 
         lines.extend(
             [
@@ -4027,6 +4687,25 @@ class DPTService:
                 WHERE project_id = ?
                 """,
                 (revision, fingerprint, timestamp, project_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO cross_repository_graph_metadata(
+                    project_id, graph_revision, published_graph_revision,
+                    tracking_started_at, deployed_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    published_graph_revision = excluded.published_graph_revision,
+                    tracking_started_at = excluded.tracking_started_at,
+                    deployed_at = excluded.deployed_at
+                """,
+                (
+                    project_id,
+                    portable.cross_repository_graph.revision,
+                    portable.cross_repository_graph.revision,
+                    portable.cross_repository_graph.tracking_started_at,
+                    timestamp,
+                ),
             )
             for repository, _ in targets:
                 if write_worktrees:
