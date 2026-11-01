@@ -311,7 +311,9 @@ def create_mcp_server(
             "including its digest and consequences, then ask the human. Call "
             "apply_plan_change_proposal only after the human explicitly agrees; "
             "the client must show its separate write-tool confirmation. Applying "
-            "never publishes, commits, pushes, reviews, or merges."
+            "never publishes, commits, pushes, reviews, or merges. A merged "
+            "milestone with an unreconciled cross-repository graph review makes "
+            "the DPT deployment stale; inspect it before planning dependent work."
         ),
     )
 
@@ -362,6 +364,7 @@ def create_mcp_server(
             "metrics": dashboard["metrics"],
             "repositories": dashboard["repositories"],
             "findings": dashboard["findings"],
+            "cross_repository_graph": dashboard["cross_repository_graph"],
             "pending_plan_proposals": sum(
                 item["status"] == "awaiting_review"
                 for item in proposals.list(project_id)
@@ -589,6 +592,130 @@ def create_mcp_server(
             raise _tool_error(error) from error
 
     @server.tool(
+        title="Get cross-repository graph status",
+        description=(
+            "Use this to inspect graph freshness, repository snapshots, reviewed "
+            "pull requests, and merged milestone PRs that require DPT redeployment."
+        ),
+        annotations=READ_ONLY,
+        structured_output=True,
+    )
+    def get_cross_repository_graph_status(project_id: str) -> dict[str, Any]:
+        try:
+            graph = service.relationship_graph(project_id)
+        except DPTError as error:
+            raise _tool_error(error) from error
+        return {
+            "schema_version": 1,
+            "project_id": project_id,
+            "deployment_status": graph["deployment_status"],
+            "graph_revision": graph["graph_revision"],
+            "published_graph_revision": graph["published_graph_revision"],
+            "verification_status": graph["verification_status"],
+            "metrics": graph["metrics"],
+            "repository_snapshots": graph["repository_snapshots"],
+            "reviewed_pull_requests": graph["change_sets"],
+            "pending_redeployments": graph["pending_redeployments"],
+            "node_count": len(graph["nodes"]),
+            "relationship_count": len(graph["relationships"]),
+        }
+
+    @server.tool(
+        title="Find cross-repository symbol relationships",
+        description=(
+            "Use this to find implementations, consumers, validators, persistence, "
+            "and tests connected to a repository symbol or graph node."
+        ),
+        annotations=READ_ONLY,
+        structured_output=True,
+    )
+    def get_symbol_relationships(
+        project_id: str,
+        repository_alias: str | None = None,
+        symbol: str | None = None,
+        node_id: str | None = None,
+    ) -> dict[str, Any]:
+        if repository_alias is None and symbol is None and node_id is None:
+            raise ToolError(
+                "Provide repository_alias, symbol, or node_id to bound the graph query"
+            )
+        try:
+            result = service.symbol_relationships(
+                project_id,
+                repository_alias=repository_alias,
+                symbol=symbol,
+                node_id=node_id,
+            )
+        except DPTError as error:
+            raise _tool_error(error) from error
+        return {"schema_version": 1, **result}
+
+    @server.tool(
+        title="Get a cross-repository implementation graph page",
+        description=(
+            "Use this for a bounded, optionally procedure/repository-filtered graph "
+            "page. Prefer the symbol query for focused impact analysis."
+        ),
+        annotations=READ_ONLY,
+        structured_output=True,
+    )
+    def get_cross_repository_graph(
+        project_id: str,
+        procedure_id: str | None = None,
+        repository_alias: str | None = None,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> dict[str, Any]:
+        try:
+            graph = service.relationship_graph(project_id)
+            registry = service.relationship_graph_registry(
+                project_id,
+                procedure_id=procedure_id,
+                repository_alias=repository_alias,
+                page=page,
+                page_size=min(page_size, 500),
+            )
+            node_ids = {item["node_id"] for item in registry["nodes"]}
+            return {
+                "schema_version": 1,
+                "project_id": project_id,
+                "deployment_status": graph["deployment_status"],
+                "verification_status": graph["verification_status"],
+                "graph_revision": graph["graph_revision"],
+                "metrics": graph["metrics"],
+                "total_nodes": registry["total"],
+                "page": registry["page"],
+                "page_size": registry["page_size"],
+                "nodes": registry["nodes"],
+                "relationships": [
+                    item
+                    for item in graph["relationships"]
+                    if item["source_node_id"] in node_ids
+                    and item["target_node_id"] in node_ids
+                ],
+            }
+        except DPTError as error:
+            raise _tool_error(error) from error
+
+    @server.tool(
+        title="Verify the cross-repository graph",
+        description=(
+            "Use this to resolve every registered path and symbol at the immutable "
+            "repository commits stored in the DPT file and report drift."
+        ),
+        annotations=READ_ONLY,
+        structured_output=True,
+    )
+    def verify_cross_repository_graph(project_id: str) -> dict[str, Any]:
+        try:
+            return {
+                "schema_version": 1,
+                **service.verify_relationship_graph(project_id),
+            }
+        except DPTError as error:
+            raise _tool_error(error) from error
+
+    @server.tool(
         title="Get available DPT actions",
         description=(
             "Use this before acting to learn which operations are currently valid "
@@ -665,6 +792,92 @@ def create_mcp_server(
                 "Present review_markdown and the review digest to the human. "
                 "Do not apply until the human explicitly agrees and the client "
                 "confirms the separate write tool call."
+            ),
+        }
+
+    @server.tool(
+        title="Propose a cross-repository graph review",
+        description=(
+            "Bootstrap an empty graph, or use this after selecting a reconciled "
+            "merged milestone PR. Later changes must include "
+            "review_merged_pull_request. The proposal requires exact human review "
+            "and does not publish the DPT file."
+        ),
+        annotations=LOCAL_WRITE,
+        structured_output=True,
+    )
+    def propose_relationship_graph_change(
+        project_id: str,
+        base_working_plan_version: int,
+        rationale: str,
+        idempotency_key: str,
+        operations: list[dict[str, Any]],
+        client_name: str = "MCP client",
+        client_version: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            parsed = PLAN_OPERATION_ADAPTER.validate_python(operations)
+            graph_kinds = {
+                "upsert_graph_node",
+                "remove_graph_node",
+                "upsert_graph_relationship",
+                "remove_graph_relationship",
+                "set_graph_repository_snapshot",
+                "initialize_graph_tracking",
+                "review_merged_pull_request",
+            }
+            if any(operation.kind not in graph_kinds for operation in parsed):
+                raise DPTError(
+                    "Relationship graph proposals may contain only graph operations"
+                )
+            graph = service.relationship_graph(project_id)
+            is_initial_baseline = (
+                graph["graph_revision"] == 0
+                and not graph["nodes"]
+                and not graph["relationships"]
+            )
+            reviews_merged_pr = any(
+                operation.kind == "review_merged_pull_request" for operation in parsed
+            )
+            if not is_initial_baseline and not reviews_merged_pr:
+                raise DPTError(
+                    "A relationship graph proposal must review a merged pull request"
+                )
+            if is_initial_baseline and not any(
+                operation.kind == "set_graph_repository_snapshot"
+                for operation in parsed
+            ):
+                raise DPTError(
+                    "The initial relationship graph baseline requires repository "
+                    "snapshots"
+                )
+            if is_initial_baseline and not any(
+                operation.kind == "initialize_graph_tracking" for operation in parsed
+            ):
+                raise DPTError(
+                    "The initial relationship graph baseline must initialize merge "
+                    "tracking"
+                )
+            request = PlanChangeProposalRequest(
+                project_id=project_id,
+                base_working_plan_version=base_working_plan_version,
+                rationale=rationale,
+                idempotency_key=idempotency_key,
+                operations=parsed,
+                client_name=client_name,
+                client_version=client_version,
+            )
+            proposal = proposals.create(request)
+        except (DPTError, ValueError) as error:
+            raise ToolError(str(error)) from error
+        return {
+            "schema_version": 1,
+            "proposal": proposal,
+            "available_actions": _actions("proposal", proposal),
+            "human_instruction": (
+                "Present review_markdown and the review digest to the human. "
+                "After application, Review & publish must deploy the updated "
+                "STATEFORGE_DPT.md."
             ),
         }
 

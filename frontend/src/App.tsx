@@ -63,6 +63,7 @@ import { api, apiStream } from "./api";
 import { Markdown } from "./Markdown";
 import { PlanEditorPage } from "./PlanEditor";
 import { ProjectStatusDashboard } from "./ProjectStatusDashboard";
+import { RelationshipGraphPage } from "./RelationshipGraph";
 import {
   RepositorySecurityStrip,
   VulnerabilitiesPage,
@@ -102,6 +103,7 @@ type PageName =
   | "repositories"
   | "plan"
   | "reconciliation"
+  | "relationship-graph"
   | "vulnerabilities"
   | "activity"
   | "settings"
@@ -114,6 +116,7 @@ const pageItems: Array<{ page: PageName; label: string; icon: ReactNode }> = [
   { page: "repositories", label: "Repositories", icon: <FolderGit2 /> },
   { page: "plan", label: "Plan editor", icon: <FileCode2 /> },
   { page: "reconciliation", label: "Reconciliation", icon: <FileDiff /> },
+  { page: "relationship-graph", label: "Relationships", icon: <Route /> },
   { page: "vulnerabilities", label: "Vulnerabilities", icon: <ShieldAlert /> },
   { page: "activity", label: "Activity", icon: <ActivityIcon /> },
   { page: "settings", label: "Settings", icon: <Settings /> },
@@ -198,7 +201,8 @@ function useRoute() {
     window.addEventListener("hashchange", update);
     return () => window.removeEventListener("hashchange", update);
   }, []);
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  const routePath = hash.replace(/^#\/?/, "").split("?", 1)[0];
+  const parts = routePath.split("/").filter(Boolean);
   return {
     raw: hash,
     root: parts[0] || "projects",
@@ -552,6 +556,10 @@ function App() {
     <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       <Sidebar
         collapsed={sidebarCollapsed}
+        graphNeedsAttention={Boolean(
+          dashboard
+          && dashboard.cross_repository_graph.deployment_status !== "in_sync"
+        )}
         page={route.page}
         project={project}
         projects={projects}
@@ -1301,6 +1309,7 @@ function ImportProjectModal({
 
 function Sidebar({
   collapsed,
+  graphNeedsAttention,
   page,
   project,
   projects,
@@ -1310,6 +1319,7 @@ function Sidebar({
   onToggleCollapsed,
 }: {
   collapsed: boolean;
+  graphNeedsAttention: boolean;
   page: PageName;
   project?: Project;
   projects: Project[];
@@ -1394,7 +1404,7 @@ function Sidebar({
       <nav>
         <span className="nav-heading">Project</span>
         {pageItems.map((item) => (
-          <button aria-label={item.label} className={item.page === page ? "active" : ""} key={item.page} onClick={() => navigate(`/projects/${project?.project_id}/${item.page}`)} title={collapsed ? item.label : undefined}>{item.icon}<span>{item.label}</span>{item.page === "reconciliation" && <i />}</button>
+          <button aria-label={item.label} className={item.page === page ? "active" : ""} key={item.page} onClick={() => navigate(`/projects/${project?.project_id}/${item.page}`)} title={collapsed ? item.label : undefined}>{item.icon}<span>{item.label}</span>{item.page === "reconciliation" && <i />}{item.page === "relationship-graph" && graphNeedsAttention && <i className="warning" />}</button>
         ))}
       </nav>
       <div className="sidebar-bottom">
@@ -1471,6 +1481,7 @@ function CurrentPage(props: {
     case "repositories": return <RepositoriesPage dashboard={props.dashboard} onAdd={props.onAddRepository} onRemoved={props.onRemoveRepository} />;
     case "plan": return <PlanEditorPage canPublishGit={Boolean(props.session?.authenticated)} dashboard={props.dashboard} onChanged={props.onPlanChanged} onGenerate={props.onGenerate} onPublishGit={props.onPublishGit} onOpenDelivery={props.onOpenStep} />;
     case "reconciliation": return <ReconciliationPage dashboard={props.dashboard} onOpenStep={props.onOpenStep} onReconcile={props.onReconcile} progress={props.reconciliationProgress} reconciling={props.reconciling} session={props.session} />;
+    case "relationship-graph": return <RelationshipGraphPage dashboard={props.dashboard} reviewer={props.session?.user?.login || "local-web-user"} onChanged={props.onPlanChanged} />;
     case "vulnerabilities": return <VulnerabilitiesPage projectId={props.dashboard.project.project_id} />;
     case "activity": return <ActivityPage activity={props.activity} />;
     case "settings": return <SettingsPage dashboard={props.dashboard} onChanged={props.onPlanChanged} />;
@@ -1480,9 +1491,19 @@ function CurrentPage(props: {
 }
 
 function OverviewPage({ dashboard, onAddRepository, onOpenStep, onReconcile }: { dashboard: Dashboard; onAddRepository: () => void; onOpenStep: (step: Step) => void; onReconcile: () => void }) {
+  const graphStatus = dashboard.cross_repository_graph.deployment_status;
+  const pendingGraphReviews = dashboard.cross_repository_graph.pending_redeployments.length;
+  const graphMessage = graphStatus === "update_required"
+    ? `${pendingGraphReviews} merged milestone ${pendingGraphReviews === 1 ? "needs" : "need"} cross-repository review.`
+    : graphStatus === "reconciling"
+      ? "The graph is reviewed locally. Use Review & publish to deploy the updated DPT file."
+      : "The relationship graph contains invalid evidence and needs review.";
   return (
     <>
       <PageHeader eyebrow="Project overview" title={`${dashboard.project.name} ${dashboard.project.release}`} description="The canonical project plan and current GitHub delivery evidence, kept current automatically." actions={<button className="button button-primary" onClick={onReconcile}><RefreshCw />Sync now</button>} />
+      {graphStatus !== "in_sync" && (
+        <button className="graph-update-banner" onClick={() => navigate(`/projects/${dashboard.project.project_id}/relationship-graph`)} type="button"><GitMerge /><span><strong>DPT redeployment required</strong><small>{graphMessage}</small></span><ArrowRight /></button>
+      )}
       <RepositoryCiStrip repositories={dashboard.repositories} onAddRepository={onAddRepository} />
       <RepositorySecurityStrip repositories={dashboard.repositories} onOpen={(repositoryId) => navigate(`/projects/${dashboard.project.project_id}/vulnerabilities${repositoryId ? `?repository=${repositoryId}` : ""}`)} />
       <ProjectStatusDashboard dashboard={dashboard} onOpenStep={onOpenStep} />

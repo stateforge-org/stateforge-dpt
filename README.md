@@ -43,6 +43,10 @@ provide the delivery evidence. Each computer keeps its own local working copy.
 - **Regression-resistant implementation.** Define cross-repository context,
   protected behavior, and verification before work begins; review the exact
   change surface and retain relevant bug history afterward.
+- **Cross-repository implementation integrity.** Map protocol contracts to the
+  Provider and Agent symbols that implement or consume them. A merged milestone
+  makes DPT visibly stale until its exact PR is reviewed, the graph is updated
+  or explicitly marked unaffected, and the next plan revision is published.
 - **A first-class AI interface.** The same local process exposes DPT through
   MCP, so coding agents can inspect roadmaps, blockers, repository context, and
   implementation packages without scraping the browser. Agents may propose

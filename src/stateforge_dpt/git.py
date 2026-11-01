@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -124,6 +125,32 @@ def read_remote_file(
         return _run(path, "show", f"FETCH_HEAD:{filename}", timeout=60)
     finally:
         environment.clear()
+
+
+def read_file_at_revision(
+    path_value: str,
+    revision: str,
+    filename: str,
+    *,
+    max_bytes: int = 2 * 1024 * 1024,
+) -> str:
+    """Read one bounded repository-relative text file at an immutable commit."""
+    path = Path(path_value).expanduser().resolve()
+    if not path.is_dir():
+        raise GitError(f"Local path does not exist: {path}")
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise GitError("Graph verification requires an exact commit SHA")
+    relative = Path(filename)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise GitError("Graph paths must remain inside the repository")
+    object_name = f"{revision}:{relative.as_posix()}"
+    try:
+        size = int(_run(path, "cat-file", "-s", object_name))
+    except ValueError as error:
+        raise GitError("Git returned an invalid object size") from error
+    if size > max_bytes:
+        raise GitError("Graph source exceeds the verification size limit")
+    return _run(path, "show", object_name)
 
 
 def fetch_remote_branch(

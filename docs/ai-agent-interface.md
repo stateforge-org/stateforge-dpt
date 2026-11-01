@@ -50,6 +50,11 @@ The MCP server exposes explicit tools for:
 - reading context and verification contracts, impact and regression evidence,
   and the latest approved implementation package;
 - inspecting recent DPT activity and plan-change proposals.
+- inspecting graph deployment freshness and merged PRs awaiting relationship
+  review;
+- finding implementations and consumers of an exact cross-repository symbol;
+- verifying registered paths and symbols at pinned repository commits; and
+- proposing human-reviewed graph updates for a selected merged milestone PR.
 
 `get_roadmap` and `get_work_queue` are compact discovery calls. They contain
 identity, dependency state, concise artifact status, readiness, and valid
@@ -60,6 +65,49 @@ chosen relevant work.
 
 Repository reads use DPT's existing tracked-file boundary. An arbitrary local
 path, untracked file, binary resource, or oversized file is not exposed.
+
+## Cross-repository relationship workflow
+
+Use `get_cross_repository_graph_status` before planning work that depends on
+another repository. An `update_required` result means at least one merged DPT
+milestone has not been reconciled into the portable graph. Use
+`get_symbol_relationships` for bounded impact analysis; reserve
+`get_cross_repository_graph` for cases that require the complete graph.
+
+After a milestone PR is merged and reconciled from GitHub:
+
+1. Read the pending item from `get_cross_repository_graph_status`.
+2. Inspect the selected PR and its exact merge commit.
+3. Submit graph-only operations through
+   `propose_relationship_graph_change`. Include exactly one or more
+   `review_merged_pull_request` operations for the selected pending PRs.
+4. Review and apply the immutable proposal through the normal proposal tools.
+5. Tell the human that the working plan is updated but still requires
+   **Review & publish** before the DPT file and published graph are in sync.
+
+Available graph operations are:
+
+```text
+upsert_graph_node
+remove_graph_node
+upsert_graph_relationship
+remove_graph_relationship
+set_graph_repository_snapshot
+initialize_graph_tracking
+review_merged_pull_request
+```
+
+The selected PR must be merged, milestone-labelled, present in reconciled
+GitHub evidence, and match the supplied merge commit SHA. A no-impact review
+requires a reason. AI suggestions do not become graph authority until the exact
+proposal is approved, applied, and subsequently published.
+
+There is one bootstrap exception: an empty revision-zero graph can receive an
+initial baseline proposal without a PR. The proposal must pin repository
+snapshots, set the merge-tracking cutoff, and receive the same exact human
+review. Merged PRs at or before that cutoff belong to the reviewed baseline;
+after the first graph revision, `propose_relationship_graph_change` requires a
+reconciled merged pull request.
 
 ## Human-controlled plan editing
 

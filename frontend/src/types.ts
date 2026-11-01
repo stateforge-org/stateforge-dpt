@@ -321,6 +321,9 @@ export type Artifact = {
   labels: string[];
   head_branch: string | null;
   base_branch: string | null;
+  head_commit_sha: string | null;
+  merge_commit_sha: string | null;
+  merged_at: string | null;
   is_draft: number;
   is_merged: number;
   checks_state: string | null;
@@ -568,6 +571,136 @@ export type Dashboard = {
   repository_metrics: RepositoryStatusMetrics[];
   history: ProjectStatusSnapshot[];
   findings: ReconciliationFinding[];
+  cross_repository_graph: RelationshipGraphSummary;
+};
+
+export type RelationshipGraphSummary = {
+  deployment_status: "in_sync" | "update_required" | "reconciling" | "invalid";
+  graph_revision: number;
+  published_graph_revision: number;
+  node_count: number;
+  relationship_count: number;
+  pending_redeployments: PendingGraphRedeployment[];
+};
+
+export type PendingGraphRedeployment = {
+  change_set_id: string;
+  artifact_id: string;
+  repository_alias: string;
+  github_full_name: string;
+  pull_request_number: number;
+  milestone_step_id: string;
+  title: string;
+  html_url: string;
+  merge_commit_sha: string | null;
+  head_commit_sha: string | null;
+  merged_at: string | null;
+  changed_files: Artifact["changed_files"];
+};
+
+export type RelationshipGraphNode = {
+  node_id: string;
+  repository_alias: string;
+  kind:
+    | "procedure"
+    | "protobuf_package"
+    | "service"
+    | "rpc"
+    | "message"
+    | "python_module"
+    | "class"
+    | "function"
+    | "storage_contract"
+    | "storage_implementation"
+    | "test";
+  label: string;
+  path: string;
+  symbol: string | null;
+  parent_node_id: string | null;
+  procedure_id: string | null;
+  implementation_state: "implemented" | "expected";
+  snapshot_sha?: string | null;
+  github_url?: string | null;
+  observation?: {
+    state: "verified" | "expected" | "missing" | "invalid" | "unavailable" | "unverified" | "stale";
+    detail: string;
+    verified_at: string;
+    line_start: number | null;
+    line_end: number | null;
+    evidence: Record<string, unknown>;
+  } | null;
+};
+
+export type RelationshipGraphRelationship = {
+  relationship_id: string;
+  source_node_id: string;
+  target_node_id: string;
+  relationship_type:
+    | "implements"
+    | "consumes"
+    | "generated_from"
+    | "validates"
+    | "persists"
+    | "translates"
+    | "exposes"
+    | "tests";
+  directness: "direct" | "transitive" | "conceptual";
+  introduced_by_change_set_id: string | null;
+  verification: {
+    method:
+      | "protobuf_descriptor"
+      | "python_ast"
+      | "import"
+      | "inheritance"
+      | "callsite"
+      | "test_reference"
+      | "manual";
+    details: string;
+  };
+  observation?: {
+    state: "verified" | "expected" | "missing" | "invalid" | "unavailable" | "unverified" | "stale";
+    detail: string;
+    verified_at: string;
+    evidence: Record<string, unknown>;
+  } | null;
+};
+
+export type RelationshipGraph = {
+  project_id: string;
+  plan_revision: number;
+  working_plan_version: number;
+  deployment_status: RelationshipGraphSummary["deployment_status"];
+  graph_revision: number;
+  published_graph_revision: number;
+  verification_status: "verified" | "partial" | "invalid" | "not_run";
+  tracking_started_at: string | null;
+  repository_snapshots: Array<{
+    repository_alias: string;
+    commit_sha: string;
+  }>;
+  change_sets: Array<{
+    change_set_id: string;
+    repository_alias: string;
+    pull_request_number: number;
+    milestone_step_id: string;
+    merge_commit_sha: string;
+    disposition: "graph_updated" | "no_cross_repository_impact";
+    reason: string;
+    reviewed_at: string;
+    reviewed_by: string;
+    html_url: string;
+  }>;
+  nodes: RelationshipGraphNode[];
+  relationships: RelationshipGraphRelationship[];
+  metrics: {
+    implemented_nodes: number;
+    expected_nodes: number;
+    verified_subjects: number;
+    drift_findings: number;
+    evidence_coverage: number;
+    procedures: number;
+  };
+  pending_redeployments: PendingGraphRedeployment[];
 };
 
 export type Activity = {

@@ -1217,6 +1217,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def project_plan_sources(project_id: str) -> dict[str, object]:
         return service.project_plan_sources(project_id)
 
+    @app.get("/api/projects/{project_id}/relationship-graph")
+    async def project_relationship_graph(project_id: str) -> dict[str, Any]:
+        """Return the deployed graph and required post-merge review inbox."""
+        return service.relationship_graph(project_id)
+
+    @app.get("/api/projects/{project_id}/relationship-graph/symbols")
+    async def project_symbol_relationships(
+        project_id: str,
+        repository_alias: str | None = None,
+        symbol: str | None = None,
+        node_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one graph neighborhood for counterpart and impact analysis."""
+        return service.symbol_relationships(
+            project_id,
+            repository_alias=repository_alias,
+            symbol=symbol,
+            node_id=node_id,
+        )
+
+    @app.get("/api/projects/{project_id}/relationship-graph/registry")
+    async def project_relationship_graph_registry(
+        project_id: str,
+        search: str | None = None,
+        repository_alias: str | None = None,
+        procedure_id: str | None = None,
+        implementation_state: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        """Return one bounded page of maintainable registered symbols."""
+        return service.relationship_graph_registry(
+            project_id,
+            search=search,
+            repository_alias=repository_alias,
+            procedure_id=procedure_id,
+            implementation_state=implementation_state,
+            page=page,
+            page_size=page_size,
+        )
+
+    @app.post("/api/projects/{project_id}/relationship-graph/verify")
+    async def verify_project_relationship_graph(project_id: str) -> dict[str, Any]:
+        """Resolve registered symbols at their immutable repository snapshots."""
+        return await asyncio.to_thread(service.verify_relationship_graph, project_id)
+
     @app.post("/api/projects/{project_id}/plan/import")
     async def import_project_plan(
         project_id: str,

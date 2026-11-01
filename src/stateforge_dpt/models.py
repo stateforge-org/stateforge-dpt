@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProjectCreate(BaseModel):
@@ -152,6 +153,45 @@ VerificationKind = Literal[
     "human",
 ]
 
+GraphNodeKind = Literal[
+    "procedure",
+    "protobuf_package",
+    "service",
+    "rpc",
+    "message",
+    "python_module",
+    "class",
+    "function",
+    "storage_contract",
+    "storage_implementation",
+    "test",
+]
+GraphImplementationState = Literal["implemented", "expected"]
+GraphRelationshipDirectness = Literal["direct", "transitive", "conceptual"]
+GraphRelationshipType = Literal[
+    "implements",
+    "consumes",
+    "generated_from",
+    "validates",
+    "persists",
+    "translates",
+    "exposes",
+    "tests",
+]
+GraphVerificationMethod = Literal[
+    "protobuf_descriptor",
+    "python_ast",
+    "import",
+    "inheritance",
+    "callsite",
+    "test_reference",
+    "manual",
+]
+GraphChangeDisposition = Literal[
+    "graph_updated",
+    "no_cross_repository_impact",
+]
+
 
 class ContextResource(BaseModel):
     """One portable source that bounds a milestone's implementation context."""
@@ -296,6 +336,107 @@ class PortableStep(BaseModel):
     )
 
 
+class PortableGraphRepositorySnapshot(BaseModel):
+    """Immutable repository revision used to verify graph symbols."""
+
+    repository_alias: str
+    commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class PortableGraphChangeSet(BaseModel):
+    """One merged pull request reviewed for cross-repository impact."""
+
+    change_set_id: str = Field(
+        pattern=r"^[a-z][a-z0-9_-]*#[1-9][0-9]*$", max_length=200
+    )
+    repository_alias: str
+    pull_request_number: int = Field(ge=1)
+    milestone_step_id: str
+    merge_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    disposition: GraphChangeDisposition
+    reason: str = Field(default="", max_length=4000)
+    reviewed_at: str = Field(min_length=1, max_length=100)
+    reviewed_by: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> PortableGraphChangeSet:
+        """Keep the portable change-set identity tied to its selected PR."""
+        expected = f"{self.repository_alias}#{self.pull_request_number}"
+        if self.change_set_id != expected:
+            raise ValueError(f"Change-set ID must be {expected}")
+        if self.disposition == "no_cross_repository_impact" and not self.reason.strip():
+            raise ValueError("A no-impact review requires a reason")
+        return self
+
+
+class PortableGraphNode(BaseModel):
+    """One repository-owned contract or implementation symbol."""
+
+    node_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/@-]*$", max_length=300)
+    repository_alias: str
+    kind: GraphNodeKind
+    label: str = Field(min_length=1, max_length=300)
+    path: str = Field(min_length=1, max_length=1000)
+    symbol: str | None = Field(default=None, max_length=1000)
+    parent_node_id: str | None = Field(default=None, max_length=300)
+    procedure_id: str | None = Field(default=None, max_length=200)
+    implementation_state: GraphImplementationState = "implemented"
+
+
+class PortableGraphVerification(BaseModel):
+    """Portable policy for obtaining evidence, never an observed result."""
+
+    method: GraphVerificationMethod = "manual"
+    details: str = Field(default="", max_length=4000)
+
+
+class PortableGraphRelationship(BaseModel):
+    """A typed relationship between symbols owned by different repositories."""
+
+    relationship_id: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/@-]*$", max_length=300
+    )
+    source_node_id: str
+    target_node_id: str
+    relationship_type: GraphRelationshipType
+    directness: GraphRelationshipDirectness = "direct"
+    introduced_by_change_set_id: str | None = None
+    verification: PortableGraphVerification = Field(
+        default_factory=PortableGraphVerification
+    )
+
+
+class PortableCrossRepositoryGraph(BaseModel):
+    """Portable cross-repository implementation relationship graph."""
+
+    revision: int = Field(default=0, ge=0)
+    tracking_started_at: str | None = Field(default=None, max_length=100)
+    repository_snapshots: list[PortableGraphRepositorySnapshot] = Field(
+        default_factory=list, max_length=100
+    )
+    change_sets: list[PortableGraphChangeSet] = Field(
+        default_factory=list, max_length=10_000
+    )
+    nodes: list[PortableGraphNode] = Field(default_factory=list, max_length=50_000)
+    relationships: list[PortableGraphRelationship] = Field(
+        default_factory=list, max_length=100_000
+    )
+
+    @field_validator("tracking_started_at")
+    @classmethod
+    def validate_tracking_started_at(cls, value: str | None) -> str | None:
+        """Normalize the merge-tracking cutoff to an aware UTC timestamp."""
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("Graph tracking start must be an ISO timestamp") from error
+        if parsed.tzinfo is None:
+            raise ValueError("Graph tracking start must include a timezone")
+        return parsed.astimezone(UTC).isoformat()
+
+
 class PortablePlan(BaseModel):
     """Validated, deterministic DPT project representation."""
 
@@ -303,6 +444,9 @@ class PortablePlan(BaseModel):
     project: PortableProject
     repositories: list[PortableRepository] = Field(max_length=100)
     steps: list[PortableStep] = Field(max_length=5000)
+    cross_repository_graph: PortableCrossRepositoryGraph = Field(
+        default_factory=PortableCrossRepositoryGraph
+    )
 
     @model_validator(mode="after")
     def validate_references(self) -> PortablePlan:
@@ -386,4 +530,91 @@ class PortablePlan(BaseModel):
 
         for step_id in step_ids:
             visit(step_id)
+
+        graph = self.cross_repository_graph
+        snapshot_aliases = [
+            item.repository_alias for item in graph.repository_snapshots
+        ]
+        if len(snapshot_aliases) != len(set(snapshot_aliases)):
+            raise ValueError("Graph repository snapshots must be unique")
+        unknown_snapshots = sorted(set(snapshot_aliases) - alias_set)
+        if unknown_snapshots:
+            raise ValueError(
+                "Graph snapshots reference unknown repositories: "
+                + ", ".join(unknown_snapshots)
+            )
+
+        change_set_ids = [item.change_set_id for item in graph.change_sets]
+        if len(change_set_ids) != len(set(change_set_ids)):
+            raise ValueError("Graph change-set IDs must be unique")
+        for change_set in graph.change_sets:
+            if change_set.repository_alias not in alias_set:
+                raise ValueError(
+                    f"Graph change set {change_set.change_set_id} references unknown "
+                    f"repository {change_set.repository_alias}"
+                )
+            if change_set.milestone_step_id not in step_set:
+                raise ValueError(
+                    f"Graph change set {change_set.change_set_id} references unknown "
+                    f"milestone {change_set.milestone_step_id}"
+                )
+            milestone = next(
+                step
+                for step in self.steps
+                if step.step_id == change_set.milestone_step_id
+            )
+            if milestone.repository_alias != change_set.repository_alias:
+                raise ValueError(
+                    f"Graph change set {change_set.change_set_id} must use the "
+                    "milestone repository"
+                )
+
+        node_ids = [item.node_id for item in graph.nodes]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("Graph node IDs must be unique")
+        node_by_id = {node.node_id: node for node in graph.nodes}
+        for node in graph.nodes:
+            if node.repository_alias not in alias_set:
+                raise ValueError(
+                    f"Graph node {node.node_id} references unknown repository "
+                    f"{node.repository_alias}"
+                )
+            parts = node.path.replace("\\", "/").split("/")
+            if node.path.startswith("/") or ".." in parts:
+                raise ValueError(
+                    f"Graph node {node.node_id} path must be repository-relative"
+                )
+            if node.parent_node_id and node.parent_node_id not in node_by_id:
+                raise ValueError(
+                    f"Graph node {node.node_id} references unknown parent "
+                    f"{node.parent_node_id}"
+                )
+            if node.parent_node_id == node.node_id:
+                raise ValueError(f"Graph node {node.node_id} cannot parent itself")
+
+        relationship_ids = [item.relationship_id for item in graph.relationships]
+        if len(relationship_ids) != len(set(relationship_ids)):
+            raise ValueError("Graph relationship IDs must be unique")
+        change_set_id_set = set(change_set_ids)
+        for relationship in graph.relationships:
+            source = node_by_id.get(relationship.source_node_id)
+            target = node_by_id.get(relationship.target_node_id)
+            if source is None or target is None:
+                raise ValueError(
+                    f"Graph relationship {relationship.relationship_id} references "
+                    "an unknown node"
+                )
+            if source.repository_alias == target.repository_alias:
+                raise ValueError(
+                    f"Graph relationship {relationship.relationship_id} must cross "
+                    "repository boundaries"
+                )
+            if (
+                relationship.introduced_by_change_set_id is not None
+                and relationship.introduced_by_change_set_id not in change_set_id_set
+            ):
+                raise ValueError(
+                    f"Graph relationship {relationship.relationship_id} references "
+                    "an unknown change set"
+                )
         return self

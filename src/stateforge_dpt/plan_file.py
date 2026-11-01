@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from stateforge_dpt.models import PortablePlan
+from stateforge_dpt.models import PortableCrossRepositoryGraph, PortablePlan
 
 DEFAULT_PLAN_FILENAME = "STATEFORGE_DPT.md"
 MANIFEST_START = "<!-- STATEFORGE_DPT_MANIFEST"
@@ -58,7 +58,16 @@ def _canonical_json(value: Any) -> str:
 
 def canonical_plan_json(plan: PortablePlan) -> str:
     """Return the stable JSON representation used for fingerprints."""
-    return _canonical_json(plan.model_dump(mode="json"))
+    return _canonical_json(_portable_plan_payload(plan))
+
+
+def _portable_plan_payload(plan: PortablePlan) -> dict[str, Any]:
+    """Keep pre-graph manifests byte-compatible until graph data is declared."""
+    payload = plan.model_dump(mode="json")
+    empty_graph = PortableCrossRepositoryGraph().model_dump(mode="json")
+    if payload.get("cross_repository_graph") == empty_graph:
+        payload.pop("cross_repository_graph", None)
+    return payload
 
 
 def plan_fingerprint(plan: PortablePlan) -> str:
@@ -73,7 +82,7 @@ def render_manifest(plan: PortablePlan) -> str:
         "format": "stateforge-dpt-plan",
         "format_version": 1,
         "fingerprint": fingerprint,
-        "plan": plan.model_dump(mode="json"),
+        "plan": _portable_plan_payload(plan),
     }
     payload = json.dumps(envelope, ensure_ascii=False, indent=2, sort_keys=True)
     # Prevent user-authored text from terminating the surrounding HTML comment.
